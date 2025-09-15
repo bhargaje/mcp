@@ -14,6 +14,8 @@
 
 """awslabs eks-review MCP Server implementation."""
 
+from awslabs.eks_review_mcp_server.eks_resiliency_handler import EKSResiliencyHandler
+from awslabs.eks_review_mcp_server.k8s_client_cache import K8sClientCache
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 from typing import Literal
@@ -25,62 +27,18 @@ mcp = FastMCP(
     dependencies=[
         'pydantic',
         'loguru',
+        'boto3',
+        'kubernetes',
+        'cachetools',
     ],
 )
 
 
-@mcp.tool(name='ExampleTool')
-async def example_tool(
-    query: str,
-) -> str:
-    """Example tool implementation.
+# Initialize shared client cache
+client_cache = K8sClientCache()
 
-    Replace this with your own tool implementation.
-    """
-    project_name = 'awslabs eks-review MCP Server'
-    return (
-        f"Hello from {project_name}! Your query was {query}. Replace this with your tool's logic"
-    )
-
-
-@mcp.tool(name='MathTool')
-async def math_tool(
-    operation: Literal['add', 'subtract', 'multiply', 'divide'],
-    a: int | float,
-    b: int | float,
-) -> int | float:
-    """Math tool implementation.
-
-    This tool supports the following operations:
-    - add
-    - subtract
-    - multiply
-    - divide
-
-    Parameters:
-        operation (Literal["add", "subtract", "multiply", "divide"]): The operation to perform.
-        a (int): The first number.
-        b (int): The second number.
-
-    Returns:
-        The result of the operation.
-    """
-    match operation:
-        case 'add':
-            return a + b
-        case 'subtract':
-            return a - b
-        case 'multiply':
-            return a * b
-        case 'divide':
-            try:
-                return a / b
-            except ZeroDivisionError:
-                raise ValueError(f'The denominator {b} cannot be zero.')
-        case _:
-            raise ValueError(
-                f'Invalid operation: {operation} (must be one of: add, subtract, multiply, divide)'
-            )
+# Initialize the EKS resiliency handler
+resiliency_handler = EKSResiliencyHandler(mcp, client_cache)
 
 
 def main():
