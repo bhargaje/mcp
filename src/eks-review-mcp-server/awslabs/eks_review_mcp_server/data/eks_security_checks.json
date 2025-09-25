@@ -5,7 +5,7 @@
             "description": "Cluster Access Manager, now the preferred way to manage access of AWS IAM principals to Amazon EKS clusters",
             "category": "IAM",
             "severity": "Medium",
-            "recommendation": "Use AWS CLI to enable the API authentication mode using ```update-cluster-config``` command \n ```aws eks update-cluster-config --name <CLUSTER_NAME> --access-config authenticationMode=API ```"
+            "recommendation": "Use AWS CLI to enable the API or API_AND_CONFIG_MAP authentication mode using ```update-cluster-config``` command \n ```aws eks update-cluster-config --name <CLUSTER_NAME> --access-config authenticationMode=API ``` or use ```API_AND_CONFIG_MAP```"
         },
         "IAM2":{
             "name": "Make the EKS Cluster Endpoint private",
@@ -15,11 +15,46 @@
             "recommendation": "Configure the EKS cluster endpoint to be private. Use AWS CLI command ```aws eks update-cluster-config --name <Cluster Name> --resources-vpc-config endpointPublicAccess=false,endpointPrivateAccess=true ```"
         },
         "IAM3":{
-            "name": "Don’t use a service account token for authentication",
+            "name": "Don't use a service account token for authentication",
             "description": "A service account token is a long-lived, static credential. If it is compromised, lost, or stolen, an attacker may be able to perform all the actions associated with that token until the service account is deleted.",
             "category": "IAM",
             "severity": "High",
             "recommendation": "you may need to grant an exception for applications that have to consume the Kubernetes API from outside the cluster, e.g. a CI/CD pipeline application. If such applications run on AWS infrastructure, like EC2 instances, consider using an instance profile and mapping that to a Kubernetes RBAC role."
+        },
+        "IAM4": {
+            "name": "Employ least privileged access when creating RoleBindings and ClusterRoleBindings",
+            "description": "When creating RoleBindings and ClusterRoleBindings, ensure that the Role or ClusterRole has the least privileged set of permissions.",
+            "category": "IAM",
+            "severity": "Medium",
+            "recommendation": "Avoid using ['*'] in your Roles and ClusterRoles unless it's absolutely necessary. If you're unsure what permissions to assign, consider using a tool like audit2rbac to automatically generate Roles and binding based on the observed API calls in the Kubernetes Audit Log."
+        },
+        "IAM5": {
+            "name": "Leverage EKS Pod Identity",
+            "description": "EKS Pod Identity allows you to assign an IAM role to a kubernetes service account, without the need to configure an Open Id Connect (OIDC) identity provider(IDP) for each cluster in your AWS account",
+            "category": "IAM",
+            "severity": "Medium",
+            "recommendation": "To use EKS Pod Identity, you must deploy an agent which runs as a DaemonSet pod on every eligible worker node. This agent is made available to you as an EKS Add-on and is a pre-requisite to use EKS Pod Identity feature. Your applications must use a supported version of the AWS SDK to use this feature"
+        },
+        "IAM6": {
+            "name": "Ensure IMDSv2 is enforced in the worker node security configuration",
+            "description": "IMDSv2 is the recommended Instance Metadata Service Version. IMDSv1 is deprecated and IMDSv2 is the recommended version.",
+            "category": "IAM",
+            "severity": "High",
+            "recommendation": "Use the modify-instance-metadata-defaults command and specify the Region in which to modify the IMDS account level settings. Include --http-tokens set to required and --http-put-response-hop-limit set to 2 if your instances will host containers. Otherwise, specify -1 to indicate no preference. When -1 (no preference) is specified, at launch, the value defaults to 2 if the AMI has the setting ImdsSupport: v2.0; otherwise it defaults to 1. \n ```aws ec2 modify-instance-metadata-defaults --region us-east-1 --http-tokens required --http-put-response-hop-limit 2```"
+        },
+        "IAM7": {
+            "name": "Run the application as a non-root user",
+            "description": "Containers run as root by default. While this allows them to read the web identity token file, running a container as root is not considered a best practice",
+            "category": "IAM",
+            "severity": "High",
+            "recommendation": "Consider adding the spec.securityContext.runAsUser attribute to the PodSpec."
+        },
+        "IAM8": {
+            "name": "Check if IRSA is configured",
+            "description": "IRSA is a feature that allows you to assign an IAM role to a Kubernetes service account. It works by leveraging a Kubernetes feature known as Service Account Token Volume Projection",
+            "category": "IAM",
+            "severity": "High",
+            "recommendation": "if EKS Pod Identity is not enabled then make sure OIDC is enabled and IRSA is configured, Pods configured with a Service Account must references an IAM Role for accessing other AWS Services with a proper annotation For example ```eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/my-role```"
         }
     }
 }

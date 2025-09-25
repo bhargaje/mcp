@@ -191,6 +191,11 @@ class EKSSecurityHandler:
             'IAM1': self._check_cluster_access_manager,
             'IAM2': self._check_private_endpoint,
             'IAM3': self._check_service_account_tokens,
+            'IAM4': self._check_least_privileged_rbac,
+            'IAM5': self._check_pod_identity,
+            'IAM6': self._check_imdsv2_enforcement,
+            'IAM7': self._check_non_root_user,
+            'IAM8': self._check_irsa_configuration,
         }
         
         method = check_methods.get(check_id)
@@ -202,49 +207,97 @@ class EKSSecurityHandler:
     async def _check_cluster_access_manager(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if EKS Cluster Access Manager is configured."""
         try:
-            # This would require AWS API calls to check cluster configuration
-            # For now, return a placeholder implementation
-            return self._create_check_result(
-                'IAM1',
-                False,  # Assume non-compliant for demonstration
-                [cluster_name],
-                'Cluster Access Manager configuration needs to be verified via AWS API'
-            )
+            import boto3
+            eks_client = boto3.client('eks')
+            
+            # Get cluster configuration
+            response = eks_client.describe_cluster(name=cluster_name)
+            cluster = response['cluster']
+            
+            # Check authentication mode
+            access_config = cluster.get('accessConfig', {})
+            auth_mode = access_config.get('authenticationMode', 'CONFIG_MAP')
+            
+            if auth_mode in ['API', 'API_AND_CONFIG_MAP']:
+                return self._create_check_result(
+                    'IAM1',
+                    True,
+                    [],
+                    f'Cluster uses {auth_mode} authentication mode'
+                )
+            else:
+                return self._create_check_result(
+                    'IAM1',
+                    False,
+                    [cluster_name],
+                    f'Cluster uses {auth_mode} authentication mode, should use API or API_AND_CONFIG_MAP'
+                )
         except Exception as e:
             return self._create_check_error_result('IAM1', str(e))
 
     async def _check_private_endpoint(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if EKS cluster endpoint is private."""
         try:
-            # This would require AWS API calls to check endpoint configuration
-            # For now, return a placeholder implementation
-            return self._create_check_result(
-                'IAM2',
-                False,  # Assume non-compliant for demonstration
-                [cluster_name],
-                'Cluster endpoint privacy configuration needs to be verified via AWS API'
-            )
+            import boto3
+            eks_client = boto3.client('eks')
+            
+            # Get cluster configuration
+            response = eks_client.describe_cluster(name=cluster_name)
+            cluster = response['cluster']
+            
+            # Check endpoint configuration
+            vpc_config = cluster.get('resourcesVpcConfig', {})
+            public_access = vpc_config.get('endpointPublicAccess', True)
+            private_access = vpc_config.get('endpointPrivateAccess', False)
+            
+            if not public_access and private_access:
+                return self._create_check_result(
+                    'IAM2',
+                    True,
+                    [],
+                    'Cluster endpoint is private only'
+                )
+            elif public_access and private_access:
+                return self._create_check_result(
+                    'IAM2',
+                    False,
+                    [cluster_name],
+                    'Cluster endpoint allows both public and private access'
+                )
+            else:
+                return self._create_check_result(
+                    'IAM2',
+                    False,
+                    [cluster_name],
+                    'Cluster endpoint is public only'
+                )
         except Exception as e:
             return self._create_check_error_result('IAM2', str(e))
 
     async def _check_service_account_tokens(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check for service account token usage."""
         try:
-            # Check for service accounts with automountServiceAccountToken enabled
-            from kubernetes import client as k8s_client
-            
-            v1 = k8s_client.CoreV1Api(client)
-            
+            # Use the K8sApis client to list service accounts
             if namespace:
-                service_accounts = v1.list_namespaced_service_account(namespace=namespace)
+                service_accounts = client.list_resources(
+                    kind='ServiceAccount',
+                    api_version='v1',
+                    namespace=namespace
+                )
             else:
-                service_accounts = v1.list_service_account_for_all_namespaces()
+                service_accounts = client.list_resources(
+                    kind='ServiceAccount',
+                    api_version='v1'
+                )
             
             non_compliant_sa = []
             for sa in service_accounts.items:
                 # Check if automountServiceAccountToken is explicitly set to True or not set (defaults to True)
-                if sa.automount_service_account_token is None or sa.automount_service_account_token:
-                    non_compliant_sa.append(f"{sa.metadata.namespace}/{sa.metadata.name}")
+                automount = sa.get('automountServiceAccountToken')
+                if automount is None or automount:
+                    sa_name = sa.metadata.name
+                    sa_namespace = sa.metadata.namespace
+                    non_compliant_sa.append(f"{sa_namespace}/{sa_name}")
             
             if non_compliant_sa:
                 return self._create_check_result(
@@ -263,3 +316,238 @@ class EKSSecurityHandler:
                 
         except Exception as e:
             return self._create_check_error_result('IAM3', str(e))
+
+    async def _check_least_privileged_rbac(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check for overly permissive RoleBindings and ClusterRoleBindings."""
+        try:
+            # Check ClusterRoles and Roles for wildcard permissions
+            cluster_roles = client.list_resources(kind='ClusterRole', api_version='rbac.authorization.k8s.io/v1')
+            roles = client.list_resources(kind='Role', api_version='rbac.authorization.k8s.io/v1', namespace=namespace) if namespace else client.list_resources(kind='Role', api_version='rbac.authorization.k8s.io/v1')
+            
+            overly_permissive = []
+            all_roles = []
+            
+            if cluster_roles and hasattr(cluster_roles, 'items'):
+                all_roles.extend(cluster_roles.items)
+            if roles and hasattr(roles, 'items'):
+                all_roles.extend(roles.items)
+            
+            for role in all_roles:
+                if not role or not hasattr(role, 'metadata'):
+                    continue
+                    
+                role_name = role.metadata.name
+                role_namespace = getattr(role.metadata, 'namespace', 'cluster-wide')
+                rules = getattr(role, 'rules', None) or []
+                
+                for rule in rules:
+                    if not rule:
+                        continue
+                    verbs = rule.get('verbs', []) or []
+                    resources = rule.get('resources', []) or []
+                    api_groups = rule.get('apiGroups', []) or []
+                    
+                    if '*' in verbs or '*' in resources or '*' in api_groups:
+                        overly_permissive.append(f"{role_namespace}/{role_name}")
+                        break
+            
+            if overly_permissive:
+                return self._create_check_result(
+                    'IAM4',
+                    False,
+                    overly_permissive,
+                    f'Found {len(overly_permissive)} roles with wildcard permissions'
+                )
+            else:
+                return self._create_check_result(
+                    'IAM4',
+                    True,
+                    [],
+                    'All roles follow least privilege principle'
+                )
+        except Exception as e:
+            return self._create_check_error_result('IAM4', str(e))
+
+    async def _check_pod_identity(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if EKS Pod Identity is configured."""
+        try:
+            import boto3
+            eks_client = boto3.client('eks')
+            
+            # Check if pod identity agent addon is installed
+            try:
+                addons = eks_client.list_addons(clusterName=cluster_name)
+                pod_identity_addon = 'eks-pod-identity-agent' in addons.get('addons', [])
+                
+                if pod_identity_addon:
+                    return self._create_check_result(
+                        'IAM5',
+                        True,
+                        [],
+                        'EKS Pod Identity agent addon is installed'
+                    )
+                else:
+                    return self._create_check_result(
+                        'IAM5',
+                        False,
+                        [cluster_name],
+                        'EKS Pod Identity agent addon is not installed'
+                    )
+            except Exception as e:
+                return self._create_check_error_result('IAM5', str(e))
+        except Exception as e:
+            return self._create_check_error_result('IAM5', str(e))
+
+    async def _check_imdsv2_enforcement(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if IMDSv2 is enforced on worker nodes."""
+        try:
+            import boto3
+            ec2_client = boto3.client('ec2')
+            
+            # Get node group instances
+            eks_client = boto3.client('eks')
+            node_groups = eks_client.list_nodegroups(clusterName=cluster_name)
+            
+            non_compliant_instances = []
+            
+            for ng_name in node_groups.get('nodegroups', []):
+                ng_details = eks_client.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng_name)
+                
+                # Check launch template or instance configuration
+                launch_template = ng_details['nodegroup'].get('launchTemplate')
+                if launch_template:
+                    lt_response = ec2_client.describe_launch_template_versions(
+                        LaunchTemplateId=launch_template['id'],
+                        Versions=[launch_template.get('version', '$Latest')]
+                    )
+                    
+                    for version in lt_response['LaunchTemplateVersions']:
+                        metadata_options = version.get('LaunchTemplateData', {}).get('MetadataOptions', {})
+                        if metadata_options.get('HttpTokens') != 'required':
+                            non_compliant_instances.append(f"nodegroup/{ng_name}")
+            
+            if non_compliant_instances:
+                return self._create_check_result(
+                    'IAM6',
+                    False,
+                    non_compliant_instances,
+                    f'Found {len(non_compliant_instances)} node groups without IMDSv2 enforcement'
+                )
+            else:
+                return self._create_check_result(
+                    'IAM6',
+                    True,
+                    [],
+                    'All node groups enforce IMDSv2'
+                )
+        except Exception as e:
+            return self._create_check_error_result('IAM6', str(e))
+
+    async def _check_non_root_user(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if pods run as non-root user."""
+        try:
+            # Get all pods and check their security context
+            if namespace:
+                pods = client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
+            else:
+                pods = client.list_resources(kind='Pod', api_version='v1')
+            
+            root_pods = []
+            
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                pod_namespace = pod.metadata.namespace
+                
+                # Check pod-level security context
+                security_context = pod.spec.get('securityContext', {})
+                run_as_user = security_context.get('runAsUser')
+                run_as_non_root = security_context.get('runAsNonRoot')
+                
+                # If runAsNonRoot is explicitly True, it's compliant
+                if run_as_non_root:
+                    continue
+                    
+                # If runAsUser is 0 or not set (defaults to root), it's non-compliant
+                if run_as_user is None or run_as_user == 0:
+                    root_pods.append(f"{pod_namespace}/{pod_name}")
+            
+            if root_pods:
+                return self._create_check_result(
+                    'IAM7',
+                    False,
+                    root_pods,
+                    f'Found {len(root_pods)} pods running as root user'
+                )
+            else:
+                return self._create_check_result(
+                    'IAM7',
+                    True,
+                    [],
+                    'All pods run as non-root user'
+                )
+        except Exception as e:
+            return self._create_check_error_result('IAM7', str(e))
+
+    async def _check_irsa_configuration(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if IRSA is configured when Pod Identity is not available."""
+        try:
+            import boto3
+            eks_client = boto3.client('eks')
+            
+            # First check if Pod Identity is enabled
+            addons = eks_client.list_addons(clusterName=cluster_name)
+            pod_identity_enabled = 'eks-pod-identity-agent' in addons.get('addons', [])
+            
+            if pod_identity_enabled:
+                return self._create_check_result(
+                    'IAM8',
+                    True,
+                    [],
+                    'Pod Identity is enabled, IRSA check not required'
+                )
+            
+            # Check if OIDC is configured
+            cluster_info = eks_client.describe_cluster(name=cluster_name)
+            oidc_issuer = cluster_info['cluster'].get('identity', {}).get('oidc', {}).get('issuer')
+            
+            if not oidc_issuer:
+                return self._create_check_result(
+                    'IAM8',
+                    False,
+                    [cluster_name],
+                    'OIDC identity provider is not configured'
+                )
+            
+            # Check service accounts for IRSA annotations
+            if namespace:
+                service_accounts = client.list_resources(kind='ServiceAccount', api_version='v1', namespace=namespace)
+            else:
+                service_accounts = client.list_resources(kind='ServiceAccount', api_version='v1')
+            
+            irsa_configured_sa = []
+            for sa in service_accounts.items:
+                annotations = sa.metadata.get('annotations', {})
+                if 'eks.amazonaws.com/role-arn' in annotations:
+                    sa_name = sa.metadata.name
+                    sa_namespace = sa.metadata.namespace
+                    irsa_configured_sa.append(f"{sa_namespace}/{sa_name}")
+            
+            if irsa_configured_sa:
+                return self._create_check_result(
+                    'IAM8',
+                    True,
+                    irsa_configured_sa,
+                    f'Found {len(irsa_configured_sa)} service accounts with IRSA configured'
+                )
+            else:
+                return self._create_check_result(
+                    'IAM8',
+                    False,
+                    [],
+                    'No service accounts found with IRSA configuration'
+                )
+        except Exception as e:
+            return self._create_check_error_result('IAM8', str(e))
+
+
+
