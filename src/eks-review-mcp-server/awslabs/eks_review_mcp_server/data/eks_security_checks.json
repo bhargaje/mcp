@@ -1,0 +1,25 @@
+{
+    "iam_checks":{
+        "IAM1":{
+            "name": "Leverage EKS Cluster Access Manager to configure RBAC",
+            "description": "Cluster Access Manager, now the preferred way to manage access of AWS IAM principals to Amazon EKS clusters",
+            "category": "IAM",
+            "severity": "Medium",
+            "recommendation": "Use AWS CLI to enable the API authentication mode using ```update-cluster-config``` command \n ```aws eks update-cluster-config --name <CLUSTER_NAME> --access-config authenticationMode=API ```"
+        },
+        "IAM2":{
+            "name": "Make the EKS Cluster Endpoint private",
+            "description": "By default when you provision an EKS cluster, the API cluster endpoint is set to public, i.e. it can be accessed from the Internet",
+            "category": "IAM",
+            "severity": "High",
+            "recommendation": "Configure the EKS cluster endpoint to be private. Use AWS CLI command ```aws eks update-cluster-config --name <Cluster Name> --resources-vpc-config endpointPublicAccess=false,endpointPrivateAccess=true ```"
+        },
+        "IAM3":{
+            "name": "Don’t use a service account token for authentication",
+            "description": "A service account token is a long-lived, static credential. If it is compromised, lost, or stolen, an attacker may be able to perform all the actions associated with that token until the service account is deleted.",
+            "category": "IAM",
+            "severity": "High",
+            "recommendation": "you may need to grant an exception for applications that have to consume the Kubernetes API from outside the cluster, e.g. a CI/CD pipeline application. If such applications run on AWS infrastructure, like EC2 instances, consider using an instance profile and mapping that to a Kubernetes RBAC role."
+        }
+    }
+}

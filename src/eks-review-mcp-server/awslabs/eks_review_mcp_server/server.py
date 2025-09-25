@@ -15,6 +15,7 @@
 """awslabs eks-review MCP Server implementation."""
 
 from awslabs.eks_review_mcp_server.eks_resiliency_handler import EKSResiliencyHandler
+from awslabs.eks_review_mcp_server.eks_security_handler import EKSSecurityHandler
 from awslabs.eks_review_mcp_server.k8s_client_cache import K8sClientCache
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
@@ -39,6 +40,9 @@ client_cache = K8sClientCache()
 
 # Initialize the EKS resiliency handler
 resiliency_handler = EKSResiliencyHandler(mcp, client_cache)
+
+# Initialize the EKS security handler
+security_handler = EKSSecurityHandler(mcp, client_cache)
 
 
 def main():
