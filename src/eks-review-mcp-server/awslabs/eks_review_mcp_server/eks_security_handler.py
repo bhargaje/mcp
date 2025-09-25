@@ -57,7 +57,7 @@ class EKSSecurityHandler:
     def _get_all_checks(self) -> Dict[str, Dict[str, Any]]:
         """Get all checks flattened into a single dictionary."""
         all_checks = {}
-        for category in ['iam_checks']:
+        for category in ['iam_checks', 'pod_security']:
             all_checks.update(self.check_registry.get(category, {}))
         return all_checks
 
@@ -188,14 +188,20 @@ class EKSSecurityHandler:
         
         # Map check IDs to their corresponding methods
         check_methods = {
-            'IAM1': self._check_cluster_access_manager,
-            'IAM2': self._check_private_endpoint,
-            'IAM3': self._check_service_account_tokens,
-            'IAM4': self._check_least_privileged_rbac,
-            'IAM5': self._check_pod_identity,
-            'IAM6': self._check_imdsv2_enforcement,
-            'IAM7': self._check_non_root_user,
-            'IAM8': self._check_irsa_configuration,
+            'I1': self._check_cluster_access_manager,
+            'I2': self._check_private_endpoint,
+            'I3': self._check_service_account_tokens,
+            'I4': self._check_least_privileged_rbac,
+            'I5': self._check_pod_identity,
+            'I6': self._check_imdsv2_enforcement,
+            'I7': self._check_non_root_user,
+            'I8': self._check_irsa_configuration,
+            'P1': self._check_pod_security_standards,
+            'P2': self._check_hostpath_usage,
+            'P3': self._check_image_tags,
+            'P4': self._check_privilege_escalation,
+            'P5': self._check_readonly_filesystem,
+            'P6': self._check_serviceaccount_token_mount,
         }
         
         method = check_methods.get(check_id)
@@ -220,20 +226,20 @@ class EKSSecurityHandler:
             
             if auth_mode in ['API', 'API_AND_CONFIG_MAP']:
                 return self._create_check_result(
-                    'IAM1',
+                    'I1',
                     True,
                     [],
                     f'Cluster uses {auth_mode} authentication mode'
                 )
             else:
                 return self._create_check_result(
-                    'IAM1',
+                    'I1',
                     False,
                     [cluster_name],
                     f'Cluster uses {auth_mode} authentication mode, should use API or API_AND_CONFIG_MAP'
                 )
         except Exception as e:
-            return self._create_check_error_result('IAM1', str(e))
+            return self._create_check_error_result('I1', str(e))
 
     async def _check_private_endpoint(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if EKS cluster endpoint is private."""
@@ -252,27 +258,27 @@ class EKSSecurityHandler:
             
             if not public_access and private_access:
                 return self._create_check_result(
-                    'IAM2',
+                    'I2',
                     True,
                     [],
                     'Cluster endpoint is private only'
                 )
             elif public_access and private_access:
                 return self._create_check_result(
-                    'IAM2',
+                    'I2',
                     False,
                     [cluster_name],
                     'Cluster endpoint allows both public and private access'
                 )
             else:
                 return self._create_check_result(
-                    'IAM2',
+                    'I2',
                     False,
                     [cluster_name],
                     'Cluster endpoint is public only'
                 )
         except Exception as e:
-            return self._create_check_error_result('IAM2', str(e))
+            return self._create_check_error_result('I2', str(e))
 
     async def _check_service_account_tokens(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check for service account token usage."""
@@ -301,21 +307,21 @@ class EKSSecurityHandler:
             
             if non_compliant_sa:
                 return self._create_check_result(
-                    'IAM3',
+                    'I3',
                     False,
                     non_compliant_sa,
                     f'Found {len(non_compliant_sa)} service accounts with automountServiceAccountToken enabled'
                 )
             else:
                 return self._create_check_result(
-                    'IAM3',
+                    'I3',
                     True,
                     [],
                     'All service accounts have automountServiceAccountToken disabled'
                 )
                 
         except Exception as e:
-            return self._create_check_error_result('IAM3', str(e))
+            return self._create_check_error_result('I3', str(e))
 
     async def _check_least_privileged_rbac(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check for overly permissive RoleBindings and ClusterRoleBindings."""
@@ -353,20 +359,20 @@ class EKSSecurityHandler:
             
             if overly_permissive:
                 return self._create_check_result(
-                    'IAM4',
+                    'I4',
                     False,
                     overly_permissive,
                     f'Found {len(overly_permissive)} roles with wildcard permissions'
                 )
             else:
                 return self._create_check_result(
-                    'IAM4',
+                    'I4',
                     True,
                     [],
                     'All roles follow least privilege principle'
                 )
         except Exception as e:
-            return self._create_check_error_result('IAM4', str(e))
+            return self._create_check_error_result('I4', str(e))
 
     async def _check_pod_identity(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if EKS Pod Identity is configured."""
@@ -381,22 +387,22 @@ class EKSSecurityHandler:
                 
                 if pod_identity_addon:
                     return self._create_check_result(
-                        'IAM5',
+                        'I5',
                         True,
                         [],
                         'EKS Pod Identity agent addon is installed'
                     )
                 else:
                     return self._create_check_result(
-                        'IAM5',
+                        'I5',
                         False,
                         [cluster_name],
                         'EKS Pod Identity agent addon is not installed'
                     )
             except Exception as e:
-                return self._create_check_error_result('IAM5', str(e))
+                return self._create_check_error_result('I5', str(e))
         except Exception as e:
-            return self._create_check_error_result('IAM5', str(e))
+            return self._create_check_error_result('I5', str(e))
 
     async def _check_imdsv2_enforcement(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if IMDSv2 is enforced on worker nodes."""
@@ -428,20 +434,20 @@ class EKSSecurityHandler:
             
             if non_compliant_instances:
                 return self._create_check_result(
-                    'IAM6',
+                    'I6',
                     False,
                     non_compliant_instances,
                     f'Found {len(non_compliant_instances)} node groups without IMDSv2 enforcement'
                 )
             else:
                 return self._create_check_result(
-                    'IAM6',
+                    'I6',
                     True,
                     [],
                     'All node groups enforce IMDSv2'
                 )
         except Exception as e:
-            return self._create_check_error_result('IAM6', str(e))
+            return self._create_check_error_result('I6', str(e))
 
     async def _check_non_root_user(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if pods run as non-root user."""
@@ -473,20 +479,20 @@ class EKSSecurityHandler:
             
             if root_pods:
                 return self._create_check_result(
-                    'IAM7',
+                    'I7',
                     False,
                     root_pods,
                     f'Found {len(root_pods)} pods running as root user'
                 )
             else:
                 return self._create_check_result(
-                    'IAM7',
+                    'I7',
                     True,
                     [],
                     'All pods run as non-root user'
                 )
         except Exception as e:
-            return self._create_check_error_result('IAM7', str(e))
+            return self._create_check_error_result('I7', str(e))
 
     async def _check_irsa_configuration(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if IRSA is configured when Pod Identity is not available."""
@@ -500,7 +506,7 @@ class EKSSecurityHandler:
             
             if pod_identity_enabled:
                 return self._create_check_result(
-                    'IAM8',
+                    'I8',
                     True,
                     [],
                     'Pod Identity is enabled, IRSA check not required'
@@ -512,7 +518,7 @@ class EKSSecurityHandler:
             
             if not oidc_issuer:
                 return self._create_check_result(
-                    'IAM8',
+                    'I8',
                     False,
                     [cluster_name],
                     'OIDC identity provider is not configured'
@@ -534,20 +540,251 @@ class EKSSecurityHandler:
             
             if irsa_configured_sa:
                 return self._create_check_result(
-                    'IAM8',
+                    'I8',
                     True,
                     irsa_configured_sa,
                     f'Found {len(irsa_configured_sa)} service accounts with IRSA configured'
                 )
             else:
                 return self._create_check_result(
-                    'IAM8',
+                    'I8',
                     False,
                     [],
                     'No service accounts found with IRSA configuration'
                 )
         except Exception as e:
-            return self._create_check_error_result('IAM8', str(e))
+            return self._create_check_error_result('I8', str(e))
+
+    async def _check_pod_security_standards(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if Pod Security Standards (PSS) and Pod Security Admission (PSA) is configured."""
+        try:
+            # Check for PSA labels on namespaces
+            if namespace:
+                namespaces = client.list_resources(kind='Namespace', api_version='v1', namespace=namespace)
+            else:
+                namespaces = client.list_resources(kind='Namespace', api_version='v1')
+            
+            non_compliant_ns = []
+            psa_labels = ['pod-security.kubernetes.io/enforce', 'pod-security.kubernetes.io/audit', 'pod-security.kubernetes.io/warn']
+            
+            for ns in namespaces.items:
+                ns_name = ns.metadata.name
+                labels = ns.metadata.get('labels', {})
+                
+                # Check if any PSA labels are present
+                has_psa = any(label in labels for label in psa_labels)
+                if not has_psa and ns_name not in ['kube-system', 'kube-public', 'kube-node-lease']:
+                    non_compliant_ns.append(ns_name)
+            
+            if non_compliant_ns:
+                return self._create_check_result(
+                    'P1',
+                    False,
+                    non_compliant_ns,
+                    f'Found {len(non_compliant_ns)} namespaces without Pod Security Standards configured'
+                )
+            else:
+                return self._create_check_result(
+                    'P1',
+                    True,
+                    [],
+                    'All namespaces have Pod Security Standards configured'
+                )
+        except Exception as e:
+            return self._create_check_error_result('P1', str(e))
+
+    async def _check_hostpath_usage(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check for hostPath volume usage."""
+        try:
+            if namespace:
+                pods = client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
+            else:
+                pods = client.list_resources(kind='Pod', api_version='v1')
+            
+            hostpath_pods = []
+            
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                pod_namespace = pod.metadata.namespace
+                volumes = pod.spec.get('volumes', [])
+                
+                for volume in volumes:
+                    if 'hostPath' in volume:
+                        hostpath_pods.append(f"{pod_namespace}/{pod_name}")
+                        break
+            
+            if hostpath_pods:
+                return self._create_check_result(
+                    'P2',
+                    False,
+                    hostpath_pods,
+                    f'Found {len(hostpath_pods)} pods using hostPath volumes'
+                )
+            else:
+                return self._create_check_result(
+                    'P2',
+                    True,
+                    [],
+                    'No pods using hostPath volumes'
+                )
+        except Exception as e:
+            return self._create_check_error_result('P2', str(e))
+
+    async def _check_image_tags(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if pods are using latest or mutable image tags."""
+        try:
+            if namespace:
+                pods = client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
+            else:
+                pods = client.list_resources(kind='Pod', api_version='v1')
+            
+            mutable_tag_pods = []
+            
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                pod_namespace = pod.metadata.namespace
+                containers = pod.spec.get('containers', [])
+                
+                for container in containers:
+                    image = container.get('image', '')
+                    if ':latest' in image or ':' not in image:
+                        mutable_tag_pods.append(f"{pod_namespace}/{pod_name}")
+                        break
+            
+            if mutable_tag_pods:
+                return self._create_check_result(
+                    'P3',
+                    False,
+                    mutable_tag_pods,
+                    f'Found {len(mutable_tag_pods)} pods using mutable image tags'
+                )
+            else:
+                return self._create_check_result(
+                    'P3',
+                    True,
+                    [],
+                    'All pods use immutable image tags'
+                )
+        except Exception as e:
+            return self._create_check_error_result('P3', str(e))
+
+    async def _check_privilege_escalation(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check for privilege escalation in pods."""
+        try:
+            if namespace:
+                pods = client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
+            else:
+                pods = client.list_resources(kind='Pod', api_version='v1')
+            
+            privilege_escalation_pods = []
+            
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                pod_namespace = pod.metadata.namespace
+                containers = pod.spec.get('containers', [])
+                
+                for container in containers:
+                    security_context = container.get('securityContext', {})
+                    allow_privilege_escalation = security_context.get('allowPrivilegeEscalation')
+                    
+                    # If not explicitly set to False, it defaults to True
+                    if allow_privilege_escalation is None or allow_privilege_escalation:
+                        privilege_escalation_pods.append(f"{pod_namespace}/{pod_name}")
+                        break
+            
+            if privilege_escalation_pods:
+                return self._create_check_result(
+                    'P4',
+                    False,
+                    privilege_escalation_pods,
+                    f'Found {len(privilege_escalation_pods)} pods allowing privilege escalation'
+                )
+            else:
+                return self._create_check_result(
+                    'P4',
+                    True,
+                    [],
+                    'All pods have privilege escalation disabled'
+                )
+        except Exception as e:
+            return self._create_check_error_result('P4', str(e))
+
+    async def _check_readonly_filesystem(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if pods have read-only root filesystem."""
+        try:
+            if namespace:
+                pods = client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
+            else:
+                pods = client.list_resources(kind='Pod', api_version='v1')
+            
+            writable_fs_pods = []
+            
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                pod_namespace = pod.metadata.namespace
+                containers = pod.spec.get('containers', [])
+                
+                for container in containers:
+                    security_context = container.get('securityContext', {})
+                    read_only_root_fs = security_context.get('readOnlyRootFilesystem')
+                    
+                    # If not explicitly set to True, filesystem is writable
+                    if not read_only_root_fs:
+                        writable_fs_pods.append(f"{pod_namespace}/{pod_name}")
+                        break
+            
+            if writable_fs_pods:
+                return self._create_check_result(
+                    'P5',
+                    False,
+                    writable_fs_pods,
+                    f'Found {len(writable_fs_pods)} pods with writable root filesystem'
+                )
+            else:
+                return self._create_check_result(
+                    'P5',
+                    True,
+                    [],
+                    'All pods have read-only root filesystem'
+                )
+        except Exception as e:
+            return self._create_check_error_result('P5', str(e))
+
+    async def _check_serviceaccount_token_mount(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if ServiceAccount token mounting is disabled for pods."""
+        try:
+            if namespace:
+                pods = client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
+            else:
+                pods = client.list_resources(kind='Pod', api_version='v1')
+            
+            token_mount_pods = []
+            
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                pod_namespace = pod.metadata.namespace
+                
+                # Check pod-level automountServiceAccountToken
+                automount = pod.spec.get('automountServiceAccountToken')
+                if automount is None or automount:
+                    token_mount_pods.append(f"{pod_namespace}/{pod_name}")
+            
+            if token_mount_pods:
+                return self._create_check_result(
+                    'P6',
+                    False,
+                    token_mount_pods,
+                    f'Found {len(token_mount_pods)} pods with ServiceAccount token mounting enabled'
+                )
+            else:
+                return self._create_check_result(
+                    'P6',
+                    True,
+                    [],
+                    'All pods have ServiceAccount token mounting disabled'
+                )
+        except Exception as e:
+            return self._create_check_error_result('P6', str(e))
 
 
 
