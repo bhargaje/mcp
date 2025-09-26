@@ -63,5 +63,14 @@
             "severity": "High",
             "recommendation": "Enable it using ```SpotToSpotConsolidation=true``` in the deployment manifest" 
        }
+    },
+    "auto_mode": {
+        "A1":{ 
+            "name": "Check if EKS Auto mode is enabled, if Auto mode is enabled do not run any Karpenter related checks",
+            "description": "Amazon EKS Auto Mode represents a significant evolution in Kubernetes infrastructure management, combining secure and scalable cluster infrastructure with integrated Kubernetes capabilities managed by AWS . The service provides fully-managed worker node operations, eliminating the need for customers to set up Managed Node Groups or AutoScaling groups",
+            "category": "auto mode",
+            "severity": "High",
+            "recommendation": "Check if Auto mode is enabled from the EKS cluster details" 
+        }
     }
 }
