@@ -33,3 +33,11 @@ class SecurityCheckResponse(CallToolResult):
     check_results: List[Dict[str, Any]] = Field(..., description='List of check results')
     overall_compliant: bool = Field(..., description='Whether all checks passed')
     summary: str = Field(..., description='Summary of the check results')
+
+
+class KarpenterCheckResponse(CallToolResult):
+    """Response model for Karpenter best practices check tool."""
+
+    check_results: List[Dict[str, Any]] = Field(..., description='List of check results')
+    overall_compliant: bool = Field(..., description='Whether all checks passed')
+    summary: str = Field(..., description='Summary of the check results')
