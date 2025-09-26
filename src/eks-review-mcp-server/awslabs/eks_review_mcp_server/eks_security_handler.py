@@ -57,7 +57,7 @@ class EKSSecurityHandler:
     def _get_all_checks(self) -> Dict[str, Dict[str, Any]]:
         """Get all checks flattened into a single dictionary."""
         all_checks = {}
-        for category in ['iam_checks', 'pod_security']:
+        for category in ['iam_checks', 'pod_security', 'multi_tenancy', 'detective_controls', 'data_encryption_and_secrets_mgmt', 'infra_security']:
             all_checks.update(self.check_registry.get(category, {}))
         return all_checks
 
@@ -202,6 +202,15 @@ class EKSSecurityHandler:
             'P4': self._check_privilege_escalation,
             'P5': self._check_readonly_filesystem,
             'P6': self._check_serviceaccount_token_mount,
+            'M1': self._check_network_policies,
+            'M2': self._check_namespace_quotas,
+            'M3': self._check_node_isolation,
+            'D1': self._check_control_plane_logs,
+            'DE1': self._check_storage_encryption,
+            'DE2': self._check_external_secrets,
+            'IS1': self._check_private_subnets,
+            'IS2': self._check_container_optimized_os,
+            'IS3': self._check_worker_node_access,
         }
         
         method = check_methods.get(check_id)
@@ -785,6 +794,434 @@ class EKSSecurityHandler:
                 )
         except Exception as e:
             return self._create_check_error_result('P6', str(e))
+
+    async def _check_network_policies(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if Network Policies are used to restrict communication between namespaces."""
+        try:
+            if namespace:
+                network_policies = client.list_resources(kind='NetworkPolicy', api_version='networking.k8s.io/v1', namespace=namespace)
+            else:
+                network_policies = client.list_resources(kind='NetworkPolicy', api_version='networking.k8s.io/v1')
+            
+            if network_policies and hasattr(network_policies, 'items') and len(network_policies.items) > 0:
+                policy_count = len(network_policies.items)
+                policy_names = [f"{policy.metadata.namespace}/{policy.metadata.name}" for policy in network_policies.items]
+                return self._create_check_result(
+                    'M1',
+                    True,
+                    policy_names,
+                    f'Found {policy_count} Network Policies configured for network isolation'
+                )
+            else:
+                return self._create_check_result(
+                    'M1',
+                    False,
+                    [],
+                    'No Network Policies found - namespaces can communicate freely'
+                )
+        except Exception as e:
+            return self._create_check_error_result('M1', str(e))
+
+    async def _check_namespace_quotas(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if Resource Quotas are defined at the namespace level."""
+        try:
+            if namespace:
+                resource_quotas = client.list_resources(kind='ResourceQuota', api_version='v1', namespace=namespace)
+                namespaces_to_check = [namespace]
+            else:
+                resource_quotas = client.list_resources(kind='ResourceQuota', api_version='v1')
+                namespaces = client.list_resources(kind='Namespace', api_version='v1')
+                namespaces_to_check = [ns.metadata.name for ns in namespaces.items if ns.metadata.name not in ['kube-system', 'kube-public', 'kube-node-lease']]
+            
+            namespaces_with_quotas = set()
+            if resource_quotas and hasattr(resource_quotas, 'items'):
+                for quota in resource_quotas.items:
+                    namespaces_with_quotas.add(quota.metadata.namespace)
+            
+            namespaces_without_quotas = [ns for ns in namespaces_to_check if ns not in namespaces_with_quotas]
+            
+            if namespaces_without_quotas:
+                return self._create_check_result(
+                    'M2',
+                    False,
+                    namespaces_without_quotas,
+                    f'Found {len(namespaces_without_quotas)} namespaces without Resource Quotas'
+                )
+            else:
+                return self._create_check_result(
+                    'M2',
+                    True,
+                    list(namespaces_with_quotas),
+                    f'All {len(namespaces_with_quotas)} namespaces have Resource Quotas configured'
+                )
+        except Exception as e:
+            return self._create_check_error_result('M2', str(e))
+
+    async def _check_node_isolation(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if tenant workloads are isolated to specific nodes using taints/tolerations and node affinity."""
+        try:
+            # Check for nodes with taints (indicating tenant isolation)
+            nodes = client.list_resources(kind='Node', api_version='v1')
+            tainted_nodes = []
+            
+            for node in nodes.items:
+                node_name = node.metadata.name
+                taints = node.spec.get('taints', [])
+                if taints:
+                    tainted_nodes.append(node_name)
+            
+            # Check for pods with tolerations or node affinity
+            if namespace:
+                pods = client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
+            else:
+                pods = client.list_resources(kind='Pod', api_version='v1')
+            
+            isolated_pods = []
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                pod_namespace = pod.metadata.namespace
+                
+                # Check for tolerations
+                tolerations = pod.spec.get('tolerations', [])
+                # Check for node affinity
+                affinity = pod.spec.get('affinity', {})
+                node_affinity = affinity.get('nodeAffinity', {})
+                
+                if tolerations or node_affinity:
+                    isolated_pods.append(f"{pod_namespace}/{pod_name}")
+            
+            if tainted_nodes or isolated_pods:
+                details = f'Found {len(tainted_nodes)} tainted nodes and {len(isolated_pods)} pods with isolation configuration'
+                return self._create_check_result(
+                    'M3',
+                    True,
+                    tainted_nodes + isolated_pods,
+                    details
+                )
+            else:
+                return self._create_check_result(
+                    'M3',
+                    False,
+                    [],
+                    'No node isolation mechanisms found (no taints, tolerations, or node affinity)'
+                )
+        except Exception as e:
+            return self._create_check_error_result('M3', str(e))
+
+    async def _check_control_plane_logs(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if EKS Control Plane logs are enabled."""
+        try:
+            import boto3
+            eks_client = boto3.client('eks')
+            
+            # Get cluster configuration
+            response = eks_client.describe_cluster(name=cluster_name)
+            cluster = response['cluster']
+            
+            # Check logging configuration
+            logging_config = cluster.get('logging', {})
+            cluster_logging = logging_config.get('clusterLogging', [])
+            
+            enabled_log_types = []
+            disabled_log_types = []
+            
+            for log_config in cluster_logging:
+                log_types = log_config.get('types', [])
+                enabled = log_config.get('enabled', False)
+                
+                if enabled:
+                    enabled_log_types.extend(log_types)
+                else:
+                    disabled_log_types.extend(log_types)
+            
+            # All possible log types
+            all_log_types = ['api', 'audit', 'authenticator', 'controllerManager', 'scheduler']
+            
+            if len(enabled_log_types) == len(all_log_types):
+                return self._create_check_result(
+                    'D1',
+                    True,
+                    enabled_log_types,
+                    f'All control plane log types are enabled: {enabled_log_types}'
+                )
+            elif enabled_log_types:
+                return self._create_check_result(
+                    'D1',
+                    False,
+                    enabled_log_types,
+                    f'Partial control plane logging enabled: {enabled_log_types}, missing: {[t for t in all_log_types if t not in enabled_log_types]}'
+                )
+            else:
+                return self._create_check_result(
+                    'D1',
+                    False,
+                    [],
+                    'No control plane logs are enabled'
+                )
+        except Exception as e:
+            return self._create_check_error_result('D1', str(e))
+
+    async def _check_storage_encryption(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if encryption is enabled in StorageClass."""
+        try:
+            # Get all StorageClasses
+            storage_classes = client.list_resources(kind='StorageClass', api_version='storage.k8s.io/v1')
+            
+            non_encrypted_sc = []
+            encrypted_sc = []
+            
+            for sc in storage_classes.items:
+                sc_name = sc.metadata.name
+                parameters = sc.get('parameters', {})
+                
+                # Check for encryption parameters based on provisioner
+                provisioner = sc.get('provisioner', '')
+                encrypted = False
+                
+                if 'ebs.csi.aws.com' in provisioner:
+                    # EBS CSI driver - check for encrypted parameter
+                    encrypted = parameters.get('encrypted', '').lower() == 'true'
+                elif 'efs.csi.aws.com' in provisioner:
+                    # EFS CSI driver - EFS is encrypted by default in newer versions
+                    encrypted = True
+                elif 'fsx.csi.aws.com' in provisioner:
+                    # FSx CSI driver - check for encryption parameters
+                    encrypted = 'KmsKeyId' in parameters or 'EncryptionAtTransitRequested' in parameters
+                
+                if encrypted:
+                    encrypted_sc.append(sc_name)
+                else:
+                    non_encrypted_sc.append(sc_name)
+            
+            if non_encrypted_sc:
+                return self._create_check_result(
+                    'DE1',
+                    False,
+                    non_encrypted_sc,
+                    f'Found {len(non_encrypted_sc)} StorageClasses without encryption enabled'
+                )
+            elif encrypted_sc:
+                return self._create_check_result(
+                    'DE1',
+                    True,
+                    encrypted_sc,
+                    f'All {len(encrypted_sc)} StorageClasses have encryption enabled'
+                )
+            else:
+                return self._create_check_result(
+                    'DE1',
+                    False,
+                    [],
+                    'No StorageClasses found in the cluster'
+                )
+        except Exception as e:
+            return self._create_check_error_result('DE1', str(e))
+
+    async def _check_external_secrets(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if external secrets provider is used."""
+        try:
+            # Check for External Secrets Operator
+            external_secrets_found = []
+            
+            # Check for ExternalSecret CRDs
+            try:
+                if namespace:
+                    external_secrets = client.list_resources(kind='ExternalSecret', api_version='external-secrets.io/v1beta1', namespace=namespace)
+                else:
+                    external_secrets = client.list_resources(kind='ExternalSecret', api_version='external-secrets.io/v1beta1')
+                
+                if external_secrets and hasattr(external_secrets, 'items') and len(external_secrets.items) > 0:
+                    for es in external_secrets.items:
+                        external_secrets_found.append(f"{es.metadata.namespace}/{es.metadata.name}")
+            except Exception:
+                # ExternalSecret CRD might not be installed
+                pass
+            
+            # Check for AWS Secrets Manager CSI driver
+            try:
+                if namespace:
+                    secret_provider_classes = client.list_resources(kind='SecretProviderClass', api_version='secrets-store.csi.x-k8s.io/v1', namespace=namespace)
+                else:
+                    secret_provider_classes = client.list_resources(kind='SecretProviderClass', api_version='secrets-store.csi.x-k8s.io/v1')
+                
+                if secret_provider_classes and hasattr(secret_provider_classes, 'items'):
+                    for spc in secret_provider_classes.items:
+                        spec = spc.get('spec', {})
+                        provider = spec.get('provider', '')
+                        if provider == 'aws':
+                            external_secrets_found.append(f"{spc.metadata.namespace}/{spc.metadata.name}")
+            except Exception:
+                # SecretProviderClass CRD might not be installed
+                pass
+            
+            # Check for AWS Load Balancer Controller (uses external secrets)
+            try:
+                if namespace:
+                    deployments = client.list_resources(kind='Deployment', api_version='apps/v1', namespace=namespace)
+                else:
+                    deployments = client.list_resources(kind='Deployment', api_version='apps/v1')
+                
+                for deployment in deployments.items:
+                    dep_name = deployment.metadata.name
+                    if 'external-secrets' in dep_name.lower() or 'secrets-store-csi' in dep_name.lower():
+                        external_secrets_found.append(f"{deployment.metadata.namespace}/{dep_name}")
+            except Exception:
+                pass
+            
+            if external_secrets_found:
+                return self._create_check_result(
+                    'DE2',
+                    True,
+                    external_secrets_found,
+                    f'Found {len(external_secrets_found)} external secrets resources'
+                )
+            else:
+                return self._create_check_result(
+                    'DE2',
+                    False,
+                    [],
+                    'No external secrets provider found - using native Kubernetes secrets only'
+                )
+        except Exception as e:
+            return self._create_check_error_result('DE2', str(e))
+
+    async def _check_private_subnets(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if worker nodes are deployed onto private subnets."""
+        try:
+            import boto3
+            ec2_client = boto3.client('ec2')
+            eks_client = boto3.client('eks')
+            
+            # Get node groups
+            node_groups = eks_client.list_nodegroups(clusterName=cluster_name)
+            public_nodegroups = []
+            private_nodegroups = []
+            
+            for ng_name in node_groups.get('nodegroups', []):
+                ng_details = eks_client.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng_name)
+                subnets = ng_details['nodegroup'].get('subnets', [])
+                
+                # Check if subnets are private
+                for subnet_id in subnets:
+                    subnet_response = ec2_client.describe_subnets(SubnetIds=[subnet_id])
+                    subnet = subnet_response['Subnets'][0]
+                    
+                    # Check route table for internet gateway
+                    route_tables = ec2_client.describe_route_tables(
+                        Filters=[{'Name': 'association.subnet-id', 'Values': [subnet_id]}]
+                    )
+                    
+                    is_public = False
+                    for rt in route_tables['RouteTables']:
+                        for route in rt.get('Routes', []):
+                            if route.get('GatewayId', '').startswith('igw-'):
+                                is_public = True
+                                break
+                    
+                    if is_public:
+                        public_nodegroups.append(ng_name)
+                        break
+                else:
+                    private_nodegroups.append(ng_name)
+            
+            if public_nodegroups:
+                return self._create_check_result(
+                    'IS1',
+                    False,
+                    public_nodegroups,
+                    f'Found {len(public_nodegroups)} node groups in public subnets'
+                )
+            else:
+                return self._create_check_result(
+                    'IS1',
+                    True,
+                    private_nodegroups,
+                    f'All {len(private_nodegroups)} node groups are in private subnets'
+                )
+        except Exception as e:
+            return self._create_check_error_result('IS1', str(e))
+
+    async def _check_container_optimized_os(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if nodes use container-optimized OS."""
+        try:
+            import boto3
+            eks_client = boto3.client('eks')
+            ec2_client = boto3.client('ec2')
+            
+            # Get node groups
+            node_groups = eks_client.list_nodegroups(clusterName=cluster_name)
+            optimized_nodegroups = []
+            non_optimized_nodegroups = []
+            
+            for ng_name in node_groups.get('nodegroups', []):
+                ng_details = eks_client.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng_name)
+                
+                # Check AMI type
+                ami_type = ng_details['nodegroup'].get('amiType', '')
+                
+                # EKS optimized AMIs are considered container-optimized
+                if any(optimized in ami_type for optimized in ['AL2_x86_64', 'AL2_x86_64_GPU', 'AL2_ARM_64', 'BOTTLEROCKET']):
+                    optimized_nodegroups.append(ng_name)
+                else:
+                    non_optimized_nodegroups.append(ng_name)
+            
+            if non_optimized_nodegroups:
+                return self._create_check_result(
+                    'IS2',
+                    False,
+                    non_optimized_nodegroups,
+                    f'Found {len(non_optimized_nodegroups)} node groups not using container-optimized OS'
+                )
+            else:
+                return self._create_check_result(
+                    'IS2',
+                    True,
+                    optimized_nodegroups,
+                    f'All {len(optimized_nodegroups)} node groups use container-optimized OS'
+                )
+        except Exception as e:
+            return self._create_check_error_result('IS2', str(e))
+
+    async def _check_worker_node_access(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Check if worker nodes have minimal access (no SSH, use SSM)."""
+        try:
+            import boto3
+            eks_client = boto3.client('eks')
+            ec2_client = boto3.client('ec2')
+            
+            # Get node groups
+            node_groups = eks_client.list_nodegroups(clusterName=cluster_name)
+            ssh_enabled_nodegroups = []
+            secure_nodegroups = []
+            
+            for ng_name in node_groups.get('nodegroups', []):
+                ng_details = eks_client.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng_name)
+                
+                # Check if SSH key is configured
+                remote_access = ng_details['nodegroup'].get('remoteAccess', {})
+                ec2_ssh_key = remote_access.get('ec2SshKey')
+                
+                if ec2_ssh_key:
+                    ssh_enabled_nodegroups.append(ng_name)
+                else:
+                    secure_nodegroups.append(ng_name)
+            
+            if ssh_enabled_nodegroups:
+                return self._create_check_result(
+                    'IS3',
+                    False,
+                    ssh_enabled_nodegroups,
+                    f'Found {len(ssh_enabled_nodegroups)} node groups with SSH access enabled'
+                )
+            else:
+                return self._create_check_result(
+                    'IS3',
+                    True,
+                    secure_nodegroups,
+                    f'All {len(secure_nodegroups)} node groups have SSH access disabled'
+                )
+        except Exception as e:
+            return self._create_check_error_result('IS3', str(e))
 
 
 

@@ -102,5 +102,84 @@
         }
     
         
+    },
+    "multi_tenancy":{
+        "M1": {
+            "name": "Check if Network Policies are used restric communication between namespaces",
+            "description": "By default, all pods in a Kubernetes cluster are allowed to communicate with each other. This behavior can be altered using network policies.",
+            "category": "Multi-Tenancy",
+            "severity": "Medium",
+            "recommendation": "if you need a network isolation between namespaces, Amazon VPC CNI now supports Kubernetes Network Policies to create policies that can isolate sensitive workloads and protect them from unauthorized access when running Kubernetes on AWS"
+        },
+        "M2": {
+            "name": "Check if Quotas are defined at the namespace level",
+            "description": "Quotas are used to define limits on workloads hosted in your cluster. With quotas, you can specify the maximum amount of CPU and memory that a pod can consume, or you can limit the number of resources that can be allocated in a cluster or namespace.",
+            "category": "Multi-Tenancy",
+            "severity": "Low",
+            "recommendation": "quotas can be configured on the namespaces in a multi-tenant environment to force tenants to specify requests and limits when scheduling their pods on the cluster."
+        },
+        "M3": {
+            "name": "Isolating tenant workloads to specific nodes",
+            "description": "Restricting tenant workloads to run on specific nodes can be used to increase isolation in the soft multi-tenancy model. With this approach, tenant-specific workloads are only run on nodes provisioned for the respective tenants",
+            "category": "Multi-Tenancy",
+            "severity": "Medium",
+            "recommendation": "To achieve this isolation, native Kubernetes properties (node affinity, and taints and tolerations) are used to target specific nodes for pod scheduling, and prevent pods, from other tenants, from being scheduled on the tenant-specific nodes."
+        }
+        
+    },
+    "detective_controls": {
+        "D1": {
+            "name": "Check if the EKS Control Plane logs are enabled",
+            "description": "Collecting and analyzing logs is useful for a variety of different reasons. Logs can help with root cause analysis and attribution",
+            "category": "Detective Controls",
+            "severity": "High",
+            "recommendation": "AWS Service Access Policies allow you to grant access to AWS services to your IAM role, without granting access to your AWS account. If you have not configured any AWS Service Access Policies, you can ignore this recommendation."
+        }
+    },
+    "network_security": {
+
+    },
+    "data_encryption_and_secrets_mgmt": {
+        "DE1": {
+            "name": "Check if Encryption is enbled in the StorgeClass",
+            "description": "Encrypting data at rest is considered a best practice. If you’re unsure whether encryption is necessary, encrypt your data.",
+            "category": "Data Encryption and Secrets Mgmt",
+            "severity": "High",
+            "recommendation": "There are three different AWS-native storage options you can use with Kubernetes: EBS, EFS, and FSx for Lustre. All three offer encryption at rest using a service managed key or a customer master key (CMK)"
+        },
+        "DE2":{
+            "name": "Use an external secrets provider",
+            "description": "External Secrets provider offer features such as fine grained access controls, strong encryption, and automatic rotation of secrets that are not available with Kubernetes Secrets",
+            "category": "Data Encryption and Secrets Mgmt",
+            "severity": "High",
+            "recommendation": "There are three different AWS-native storage options you can use with Kubernetes: EBS, EFS, and FSx for Lustre. All three offer encryption at rest using a service managed key or a customer master key (CMK)"
+        }
+          
+    },
+    "runtime_security": {
+    },
+    "infra_security": {
+        "IS1": {
+            "name": "Check if the workers nodes are deployed onto private subnets",
+            "description": "By deploying workers onto private subnets, you minimize their exposure to the Internet where attacks often originate.",
+            "category": "Infra Security",
+            "severity": "High",
+            "recommendation": "Ensure you are using Private subnets for worker nodes"
+        },
+        "IS2": {
+            "name": "Use an OS optimized for running containers",
+            "description": "Using a Container optimized ensures the performance and also reduces the attack surface",
+            "category": "Infra Security",
+            "severity": "High",
+            "recommendation": "Consider using Flatcar Linux, Project Atomic, RancherOS, and Bottlerocket, Alternately, use the EKS optimized AMI for your Kubernetes worker nodes"
+        },
+        "IS3": {
+            "name": "Minimize access to worker nodes",
+            "description": "Instead of enabling SSH access for the worker nodes, use SSM Session Manager when you need to remote into a host.",
+            "category": "Infra Security",
+            "severity": "Medium",
+            "recommendation": "Use Session Manager to access the worker node EC2 console "
+        }
     }
+
 }
