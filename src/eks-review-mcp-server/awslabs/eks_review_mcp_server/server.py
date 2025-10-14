@@ -17,6 +17,7 @@
 from awslabs.eks_review_mcp_server.eks_resiliency_handler import EKSResiliencyHandler
 from awslabs.eks_review_mcp_server.eks_security_handler import EKSSecurityHandler
 from awslabs.eks_review_mcp_server.eks_karpenter_handler import EKSKarpenterHandler
+from awslabs.eks_review_mcp_server.eks_networking_handler import EKSNetworkingHandler
 from awslabs.eks_review_mcp_server.k8s_client_cache import K8sClientCache
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
@@ -47,6 +48,9 @@ security_handler = EKSSecurityHandler(mcp, client_cache)
 
 # Initialize the EKS Karpenter handler
 karpenter_handler = EKSKarpenterHandler(mcp, client_cache)
+
+# Initialize the EKS networking handler
+networking_handler = EKSNetworkingHandler(mcp, client_cache)
 
 
 def main():
