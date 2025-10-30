@@ -1,0 +1,114 @@
+{
+    "version_compatibility": {
+        "VC1": {
+            "name": "Cluster Autoscaler version matches cluster version",
+            "description": "The Cluster Autoscaler's version should match the Kubernetes cluster version for compatibility",
+            "category": "Version Compatibility",
+            "severity": "High",
+            "recommendation": "Ensure the Cluster Autoscaler version matches your EKS cluster version. Cross-version compatibility is not tested or supported."
+        }
+    },
+    "auto_discovery": {
+        "AD1": {
+            "name": "Auto Discovery is enabled",
+            "description": "Auto Discovery should be enabled unless you have specific advanced use cases",
+            "category": "Auto Discovery",
+            "severity": "High",
+            "recommendation": "Enable Auto Discovery using --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/<cluster-name>"
+        },
+        "AD2": {
+            "name": "Node groups have proper auto-discovery tags",
+            "description": "Node groups must have the required tags for auto-discovery to work",
+            "category": "Auto Discovery",
+            "severity": "High",
+            "recommendation": "Add these tags to your Auto Scaling Groups: k8s.io/cluster-autoscaler/enabled=true and k8s.io/cluster-autoscaler/<cluster-name>=owned"
+        }
+    },
+    "iam_permissions": {
+        "IAM1": {
+            "name": "Least privileged IAM role with scoped permissions",
+            "description": "IAM role should follow least privilege principle with actions scoped to specific Auto Scaling Groups",
+            "category": "IAM Security",
+            "severity": "High",
+            "recommendation": "Limit autoscaling:SetDesiredCapacity and autoscaling:TerminateInstanceInAutoScalingGroup actions to ASGs with proper tags using resource conditions"
+        }
+    },
+    "node_group_config": {
+        "NG1": {
+            "name": "Identical scheduling properties within node groups",
+            "description": "Each node in a node group should have identical scheduling properties (labels, taints, resources)",
+            "category": "Node Group Configuration",
+            "severity": "High",
+            "recommendation": "Ensure all nodes in a node group have identical labels, taints, and resources. For Mixed Instance Policies, use instance types with the same CPU, memory, and GPU shape."
+        },
+        "NG2": {
+            "name": "Prefer fewer node groups with many nodes",
+            "description": "Node groups with many nodes are preferred over many node groups with fewer nodes for scalability",
+            "category": "Node Group Configuration",
+            "severity": "Medium",
+            "recommendation": "Consolidate workloads into fewer, larger node groups rather than creating many small node groups. Use namespaces for pod isolation instead of separate node groups."
+        },
+        "NG3": {
+            "name": "Use EKS Managed Node Groups",
+            "description": "EKS Managed Node Groups provide automatic discovery and graceful termination features",
+            "category": "Node Group Configuration",
+            "severity": "Medium",
+            "recommendation": "Use EKS Managed Node Groups for automatic EC2 Auto Scaling Group discovery and graceful node termination capabilities."
+        }
+    },
+    "cost_optimization": {
+        "CO1": {
+            "name": "Use Spot Instances with proper diversification",
+            "description": "Spot instances can save up to 90% cost but require proper diversification strategy",
+            "category": "Cost Optimization",
+            "severity": "Medium",
+            "recommendation": "Use Mixed Instance Policies with multiple similar instance types (e.g., M4, M5, M5a, M5n) to maximize Spot capacity availability and reduce interruption impact."
+        },
+        "CO2": {
+            "name": "Separate On-Demand and Spot capacity",
+            "description": "Isolate On-Demand and Spot instances into separate Auto Scaling Groups due to different scheduling properties",
+            "category": "Cost Optimization",
+            "severity": "Medium",
+            "recommendation": "Create separate node groups for On-Demand and Spot instances. Apply appropriate taints to Spot nodes requiring explicit tolerations."
+        },
+        "CO3": {
+            "name": "Configure appropriate expander strategy",
+            "description": "Expander strategy determines which node group to scale for cost optimization",
+            "category": "Cost Optimization",
+            "severity": "Low",
+            "recommendation": "Use --expander=least-waste for general cost optimization, or --expander=priority for priority-based scaling with ConfigMap configuration."
+        }
+    },
+    "performance_scalability": {
+        "PS1": {
+            "name": "Appropriate resource allocation for Cluster Autoscaler",
+            "description": "Cluster Autoscaler needs sufficient CPU and memory resources for large clusters",
+            "category": "Performance & Scalability",
+            "severity": "Medium",
+            "recommendation": "Increase CPU and memory requests for large clusters (>1000 nodes). Consider using Vertical Pod Autoscaler or Addon Resizer for automatic resource scaling."
+        },
+        "PS2": {
+            "name": "Optimize scan interval for cluster size",
+            "description": "Scan interval should be balanced between responsiveness and API rate limiting",
+            "category": "Performance & Scalability",
+            "severity": "Low",
+            "recommendation": "Consider increasing scan interval from default 10s to 1 minute for large clusters to reduce API calls, as node launch time is typically much longer."
+        }
+    },
+    "availability": {
+        "AV1": {
+            "name": "Configure overprovisioning for reduced latency",
+            "description": "Overprovisioning trades cost for improved pod scheduling latency",
+            "category": "Availability",
+            "severity": "Low",
+            "recommendation": "Implement overprovisioning using pause pods with negative priority to maintain spare capacity for faster pod scheduling."
+        },
+        "AV2": {
+            "name": "Protect expensive workloads from eviction",
+            "description": "Long-running or expensive workloads should be protected from scale-down eviction",
+            "category": "Availability",
+            "severity": "Medium",
+            "recommendation": "Add cluster-autoscaler.kubernetes.io/safe-to-evict=false annotation to pods that are expensive to evict (ML training, big data jobs)."
+        }
+    }
+}

@@ -1,0 +1,25 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: test-cas-cluster
+  region: us-west-2
+  version: "1.28"
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: test-cas-nodegroup
+    instanceType: t3.medium
+    minSize: 1
+    maxSize: 4
+    desiredCapacity: 2
+    tags:
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/test-cas-cluster: "owned"
+    iam:
+      attachPolicyARNs:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
