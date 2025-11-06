@@ -151,28 +151,65 @@ class EKSClusterAutoscalerHandler:
                 logger.error(f'Failed to get K8s client for cluster {cluster_name}: {str(e)}')
                 return self._create_error_response(cluster_name, str(e))
 
-            # Run all checks
+            # First check if Cluster Autoscaler is deployed (VC1 check)
+            ca_deployment_result = await self._check_version_compatibility(k8s_client, cluster_name, region, namespace)
+            
             check_results = []
             all_compliant = True
             
-            # Get all checks and sort by ID for consistent execution order
-            all_checks = self._get_all_checks()
+            # Check if Cluster Autoscaler was found
+            ca_found = ca_deployment_result['compliant'] or (
+                ca_deployment_result['impacted_resources'] and 
+                len(ca_deployment_result['impacted_resources']) > 0
+            )
             
-            for check_id in sorted(all_checks.keys()):
-                try:
-                    logger.info(f'Running check {check_id}')
-                    result = await self._execute_check(check_id, k8s_client, cluster_name, region, namespace)
-                    check_results.append(result)
-                    
-                    if not result['compliant']:
-                        all_compliant = False
+            # If Cluster Autoscaler is deployed, run all checks
+            if ca_found:
+                logger.info('Cluster Autoscaler found - running Cluster Autoscaler best practices checks')
+                
+                # Add the version compatibility check result
+                check_results.append(ca_deployment_result)
+                
+                # Get remaining checks (AD1-AV2) and sort by ID
+                all_checks = self._get_all_checks()
+                remaining_checks = {k: v for k, v in all_checks.items() if k != 'VC1'}
+                
+                for check_id in sorted(remaining_checks.keys()):
+                    try:
+                        logger.info(f'Running check {check_id}')
+                        result = await self._execute_check(check_id, k8s_client, cluster_name, region, namespace)
+                        check_results.append(result)
                         
-                    logger.info(f'Check {check_id} completed: {result["compliant"]}')
-                    
-                except Exception as e:
-                    logger.error(f'Error in check {check_id}: {str(e)}')
-                    error_result = self._create_check_error_result(check_id, str(e))
-                    check_results.append(error_result)
+                        if not result['compliant']:
+                            all_compliant = False
+                            
+                        logger.info(f'Check {check_id} completed: {result["compliant"]}')
+                        
+                    except Exception as e:
+                        logger.error(f'Error in check {check_id}: {str(e)}')
+                        error_result = self._create_check_error_result(check_id, str(e))
+                        check_results.append(error_result)
+                        all_compliant = False
+            else:
+                logger.info('Cluster Autoscaler not found - checking for alternative autoscaling solutions')
+                
+                # Check if Karpenter or Auto Mode is being used
+                karpenter_found = await self._check_for_karpenter(k8s_client, namespace)
+                auto_mode_enabled = await self._check_for_auto_mode(cluster_name, region)
+                
+                if karpenter_found or auto_mode_enabled:
+                    alternative = 'Karpenter' if karpenter_found else 'EKS Auto Mode'
+                    logger.info(f'{alternative} detected - Cluster Autoscaler checks not applicable')
+                    check_results.append(self._create_check_result(
+                        'VC1',
+                        True,
+                        [],
+                        f'Cluster Autoscaler not found, but {alternative} is being used for node autoscaling'
+                    ))
+                    all_compliant = True  # Using alternative is compliant
+                else:
+                    logger.info('No autoscaling solution found - adding Cluster Autoscaler deployment check')
+                    check_results.append(ca_deployment_result)
                     all_compliant = False
 
             # Generate summary
@@ -429,3 +466,40 @@ class EKSClusterAutoscalerHandler:
     async def _check_workload_protection(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check workload protection - placeholder implementation."""
         return self._create_check_result('AV2', True, [], 'Workload protection check not yet implemented')
+    as
+ync def _check_for_karpenter(self, k8s_client, namespace: Optional[str]) -> bool:
+        """Check if Karpenter is deployed in the cluster."""
+        try:
+            deployments = k8s_client.list_resources(
+                kind='Deployment',
+                api_version='apps/v1',
+                namespace=namespace or 'karpenter'
+            )
+            
+            for deployment in deployments.items:
+                if 'karpenter' in deployment.metadata.name.lower():
+                    logger.info(f'Found Karpenter deployment: {deployment.metadata.name}')
+                    return True
+            
+            return False
+        except Exception as e:
+            logger.warning(f'Error checking for Karpenter: {str(e)}')
+            return False
+
+    async def _check_for_auto_mode(self, cluster_name: str, region: Optional[str]) -> bool:
+        """Check if EKS Auto Mode is enabled for the cluster."""
+        try:
+            eks_client = AwsHelper.create_boto3_client('eks', region_name=region)
+            response = eks_client.describe_cluster(name=cluster_name)
+            
+            # Check if Auto Mode is enabled
+            compute_config = response.get('cluster', {}).get('computeConfig', {})
+            enabled = compute_config.get('enabled', False)
+            
+            if enabled:
+                logger.info('EKS Auto Mode is enabled for this cluster')
+            
+            return enabled
+        except Exception as e:
+            logger.warning(f'Error checking for Auto Mode: {str(e)}')
+            return False

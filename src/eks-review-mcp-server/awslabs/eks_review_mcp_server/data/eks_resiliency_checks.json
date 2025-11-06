@@ -143,7 +143,8 @@
       "description": "Check for node autoscaling configuration",
       "category": "data_plane",
       "severity": "high",
-      "enabled": true
+      "enabled": true,
+      "skip_for_auto_mode": true
     },
     "D2": {
       "name": "Worker nodes spread across multiple AZs",
@@ -185,7 +186,8 @@
       "description": "Check if CoreDNS is properly managed",
       "category": "data_plane",
       "severity": "low",
-      "enabled": true
+      "enabled": true,
+      "skip_for_auto_mode": true
     }
   }
 }

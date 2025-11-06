@@ -34,7 +34,8 @@
             "name": "Ensure IMDSv2 is enforced in the worker node security configuration",
             "description": "IMDSv2 is the recommended Instance Metadata Service Version. IMDSv1 is deprecated and IMDSv2 is the recommended version.",
             "category": "IAM",
-            "severity": "High"
+            "severity": "High",
+            "skip_for_auto_mode": true
         },
         "I7": {
             "name": "Run the application as a non-root user",
@@ -46,7 +47,8 @@
             "name": "Check if IRSA is configured",
             "description": "IRSA is a feature that allows you to assign an IAM role to a Kubernetes service account. It works by leveraging a Kubernetes feature known as Service Account Token Volume Projection",
             "category": "IAM",
-            "severity": "High"
+            "severity": "High",
+            "skip_for_auto_mode": true
         }
     },
     "pod_security": {
