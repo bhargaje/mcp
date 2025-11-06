@@ -25,131 +25,45 @@ from mcp.server.fastmcp import FastMCP
 from typing import Literal
 
 
-INSTRUCTIONS = """Amazon EKS Review MCP Server for operational excellence and best practices assessment of Amazon EKS clusters.
+INSTRUCTIONS = """Amazon EKS Review MCP Server - Assess EKS clusters against AWS best practices across networking, security, resiliency, Karpenter, and Cluster Autoscaler.
 
-This server provides comprehensive analysis of your EKS clusters against AWS best practices across networking, security, resiliency, and Karpenter configuration.
+## Tools
 
-## Key Capabilities
+**check_eks_networking**: Cluster endpoint access, multi-AZ distribution, VPC/subnet configuration, security groups
+**check_eks_security**: IAM/RBAC, pod security, encryption, secrets management, infrastructure security
+**check_eks_resiliency**: Pod controllers, replicas, health probes, PDBs, autoscaling (HPA/VPA/CA), monitoring
+**check_karpenter_best_practices**: Karpenter deployment, NodePools, instance selection, spot optimization
+**check_cluster_autoscaler_best_practices**: CA deployment, version compatibility, auto-discovery, node groups
 
-- **Comprehensive Assessment**: Evaluate clusters across networking, security, resiliency, and Karpenter domains
-- **Current State Analysis**: Reports actual configuration and identifies non-compliant resources
-- **AI-Generated Remediation**: Tools provide findings; AI generates context-aware remediation guidance
-- **Flexible Scope**: Run all checks for complete review or target specific domains
+## Usage
 
-## Available Tools
+**General review** → Run all 5 tools
+**Specific domain** → Run relevant tool only (networking/security/resiliency/karpenter/cluster-autoscaler)
 
-### check_eks_networking
-Evaluates networking configuration and connectivity best practices including cluster endpoint access control, CIDR restrictions, multi-AZ node distribution, VPC configuration, and security group settings.
+## Tool Output
 
-### check_eks_security
-Assesses security posture across IAM/RBAC configuration, pod security standards, multi-tenancy isolation, control plane logging, data encryption, secrets management, and infrastructure security.
-
-### check_eks_resiliency
-Analyzes application and infrastructure resilience including pod controllers, replica configuration, anti-affinity rules, health probes, pod disruption budgets, autoscaling (HPA/VPA/Cluster Autoscaler), node lifecycle management, and monitoring/logging setup.
-
-### check_karpenter_best_practices
-Reviews Karpenter deployment and configuration including version management, AMI pinning, instance type selection, NodePool configuration, TTL settings, spot instance optimization, resource limits, and disruption budgets.
-
-### check_cluster_autoscaler_best_practices
-Evaluates Cluster Autoscaler deployment and configuration including version compatibility, auto-discovery settings, IAM permissions, node group configuration, cost optimization (spot instances, expander strategy), performance settings, and availability configurations.
-
-## Usage Guidelines
-
-### When to Run All Checks
-If the user requests a general EKS best practices review or cluster assessment without specifying a domain, **run all five tools**:
-1. check_eks_networking
-2. check_eks_security
-3. check_eks_resiliency
-4. check_karpenter_best_practices
-5. check_cluster_autoscaler_best_practices
-
-### When to Run Specific Checks
-If the user explicitly requests a specific domain, run only the relevant tool(s):
-- Networking/connectivity/endpoint issues → check_eks_networking
-- Security/IAM/RBAC/access control → check_eks_security
-- Availability/resilience/autoscaling/pod issues → check_eks_resiliency
-- Karpenter/node autoscaling configuration → check_karpenter_best_practices
-- Cluster Autoscaler configuration → check_cluster_autoscaler_best_practices
-
-## Understanding Tool Output
-
-Each tool returns check results with:
-- **compliant**: Boolean indicating if the check passed
-- **impacted_resources**: List of specific resources that failed the check
-- **details**: Description of what was found (current state of the resource)
-- **remediation**: Empty string - AI must generate context-aware remediation
-- **severity**: High, Medium, or Low priority level
+Each check returns:
+- **compliant**: Pass/fail status
+- **impacted_resources**: Failed resources
+- **details**: Current configuration state
+- **remediation**: Empty - AI generates context-aware fixes
+- **severity**: High/Medium/Low
 
 ## AI Responsibilities
 
-When analyzing check results, the AI must:
+1. Analyze findings from details and impacted_resources
+2. Generate remediation based on AWS/K8s best practices
+3. Prioritize by severity (High → Medium → Low)
+4. Provide actionable steps (commands, YAML, configs)
 
-1. **Analyze findings** from the check results (details and impacted_resources fields)
-2. **Generate remediation guidance** based on:
-   - Specific issues identified in the details
-   - Impacted resources that need attention
-   - AWS and Kubernetes best practices
-   - Context of the user's environment
-3. **Prioritize by severity**: Address High severity issues first, then Medium, then Low
-4. **Provide actionable steps**: Include specific commands, YAML examples, or configuration changes that can be applied immediately
+## Notes
 
-## Important Notes
+- Tools report current state only; AI generates all remediation
+- Requires AWS credentials and kubectl access
+- Optimized to minimize API calls (resources fetched once, shared across checks)
+- Auto Mode detection: Karpenter/CA checks skip for Auto Mode clusters
 
-- Tools report **current state only** - they do NOT include pre-written remediation text
-- AI must generate **dynamic, context-aware remediation** based on actual findings
-- All tools require valid AWS credentials and kubectl access to the target cluster
-- If a tool fails to connect, inform the user to verify cluster access and credentials
-
-## Common Workflows
-
-### Complete Cluster Review
-```
-User: "Review my EKS cluster 'production-cluster' for best practices"
-AI Action: 
-  1. Run all 5 tools (networking, security, resiliency, karpenter, cluster autoscaler)
-  2. Analyze all results and identify issues by severity
-  3. Generate comprehensive report with prioritized remediation steps
-  4. Provide actionable fixes for high-severity issues first
-```
-
-### Targeted Security Assessment
-```
-User: "Check security configuration for 'dev-cluster'"
-AI Action:
-  1. Run check_eks_security only
-  2. Analyze security findings (IAM, RBAC, pod security, encryption)
-  3. Generate security-focused remediation with specific fixes
-  4. Prioritize critical security vulnerabilities
-```
-
-### Karpenter Configuration Review
-```
-User: "Review my Karpenter setup in 'staging-cluster'"
-AI Action:
-  1. Run check_karpenter_best_practices
-  2. Analyze NodePool configuration, instance selection, spot usage
-  3. Provide specific Karpenter configuration improvements
-  4. Suggest optimizations for cost and reliability
-```
-
-### Cluster Autoscaler Configuration Review
-```
-User: "Check my Cluster Autoscaler configuration in 'prod-cluster'"
-AI Action:
-  1. Run check_cluster_autoscaler_best_practices
-  2. Analyze version compatibility, auto-discovery, IAM permissions, node groups
-  3. Provide specific Cluster Autoscaler configuration improvements
-  4. Suggest optimizations for performance and cost
-```
-
-## Best Practices Alignment
-
-This server aligns with AWS EKS Best Practices Guide:
-- EKS Best Practices: https://docs.aws.amazon.com/eks/latest/best-practices/introduction.html
-- Networking: https://docs.aws.amazon.com/eks/latest/best-practices/networking.html
-- Reliability: https://docs.aws.amazon.com/eks/latest/best-practices/reliability.html
-- Security: https://docs.aws.amazon.com/eks/latest/best-practices/security.html
-- Cluster Autoscaling: https://docs.aws.amazon.com/eks/latest/best-practices/cluster-autoscaling.html
+Aligns with: https://docs.aws.amazon.com/eks/latest/best-practices/
 """
 
 mcp = FastMCP(
