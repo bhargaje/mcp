@@ -12,72 +12,97 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the eks-review MCP Server."""
+"""Tests for the server module of the eks-review-mcp-server."""
 
 import pytest
-from awslabs.eks_review_mcp_server.server import example_tool
-from awslabs.eks_review_mcp_server.server import math_tool
+from awslabs.eks_review_mcp_server.server import (
+    mcp,
+    resiliency_handler,
+    security_handler,
+    karpenter_handler,
+    cluster_autoscaler_handler,
+    networking_handler,
+    client_cache,
+)
 
-@pytest.mark.asyncio
-async def test_example_tool():
-    # Arrange
-    test_query = "test query"
-    expected_project_name = "awslabs eks-review MCP Server"
-    expected_response = f"Hello from {expected_project_name}! Your query was {test_query}. Replace this with your tool's logic"
 
-    # Act
-    result = await example_tool(test_query)
+class TestMCPServer:
+    """Tests for the MCP server."""
 
-    # Assert
-    assert result == expected_response
+    def test_mcp_initialization(self):
+        """Test that the MCP server is initialized correctly."""
+        assert mcp.name == 'awslabs.eks-review-mcp-server'
+        assert mcp.instructions is not None
+        assert 'Amazon EKS Review MCP Server' in mcp.instructions
+        assert 'check_eks_networking' in mcp.instructions
+        assert 'check_eks_security' in mcp.instructions
+        assert 'check_eks_resiliency' in mcp.instructions
+        assert 'check_karpenter_best_practices' in mcp.instructions
+        assert 'check_cluster_autoscaler_best_practices' in mcp.instructions
 
-@pytest.mark.asyncio
-async def test_example_tool_failure():
-    # Arrange
-    test_query = "test query"
-    expected_project_name = "awslabs eks-review MCP Server"
-    expected_response = f"Hello from {expected_project_name}! Your query was {test_query}. Replace this your tool's new logic"
+    def test_mcp_dependencies(self):
+        """Test that the MCP server has the required dependencies."""
+        assert 'pydantic' in mcp.dependencies
+        assert 'loguru' in mcp.dependencies
+        assert 'boto3' in mcp.dependencies
+        assert 'kubernetes' in mcp.dependencies
+        assert 'cachetools' in mcp.dependencies
 
-    # Act
-    result = await example_tool(test_query)
+    def test_handlers_initialization(self):
+        """Test that all handlers are initialized correctly."""
+        assert resiliency_handler is not None
+        assert security_handler is not None
+        assert karpenter_handler is not None
+        assert cluster_autoscaler_handler is not None
+        assert networking_handler is not None
 
-    # Assert
-    assert result != expected_response
+    def test_client_cache_initialization(self):
+        """Test that the client cache is initialized correctly."""
+        assert client_cache is not None
 
-@pytest.mark.asyncio
-class TestMathTool:
-    async def test_addition(self):
-        # Test integer addition
-        assert await math_tool('add', 2, 3) == 5
-        # Test float addition
-        assert await math_tool('add', 2.5, 3.5) == 6.0
+    def test_handlers_share_client_cache(self):
+        """Test that all handlers share the same client cache instance."""
+        assert resiliency_handler.client_cache is client_cache
+        assert security_handler.client_cache is client_cache
+        assert karpenter_handler.client_cache is client_cache
+        assert cluster_autoscaler_handler.client_cache is client_cache
+        assert networking_handler.client_cache is client_cache
 
-    async def test_subtraction(self):
-        # Test integer subtraction
-        assert await math_tool('subtract', 5, 3) == 2
-        # Test float subtraction
-        assert await math_tool('subtract', 5.5, 2.5) == 3.0
 
-    async def test_multiplication(self):
-        # Test integer multiplication
-        assert await math_tool('multiply', 4, 3) == 12
-        # Test float multiplication
-        assert await math_tool('multiply', 2.5, 2) == 5.0
+class TestTools:
+    """Tests for the MCP tools."""
 
-    async def test_division(self):
-        # Test integer division
-        assert await math_tool('divide', 6, 2) == 3.0
-        # Test float division
-        assert await math_tool('divide', 5.0, 2.0) == 2.5
+    def test_check_eks_networking_registration(self):
+        """Test that the check_eks_networking tool is registered correctly."""
+        tool = mcp._tool_manager.get_tool('check_eks_networking')
+        assert tool is not None
+        assert tool.name == 'check_eks_networking'
+        assert 'Check EKS cluster for networking best practices' in tool.description
 
-    async def test_division_by_zero(self):
-        # Test division by zero raises ValueError
-        with pytest.raises(ValueError) as exc_info:
-            await math_tool('divide', 5, 0)
-        assert str(exc_info.value) == 'The denominator 0 cannot be zero.'
+    def test_check_eks_security_registration(self):
+        """Test that the check_eks_security tool is registered correctly."""
+        tool = mcp._tool_manager.get_tool('check_eks_security')
+        assert tool is not None
+        assert tool.name == 'check_eks_security'
+        assert 'Check EKS cluster for security best practices' in tool.description
 
-    async def test_invalid_operation(self):
-        # Test invalid operation raises ValueError
-        with pytest.raises(ValueError) as exc_info:
-            await math_tool('power', 2, 3)
-        assert 'Invalid operation: power' in str(exc_info.value)
+    def test_check_eks_resiliency_registration(self):
+        """Test that the check_eks_resiliency tool is registered correctly."""
+        tool = mcp._tool_manager.get_tool('check_eks_resiliency')
+        assert tool is not None
+        assert tool.name == 'check_eks_resiliency'
+        assert 'Check EKS cluster for resiliency best practices' in tool.description
+
+    def test_check_karpenter_best_practices_registration(self):
+        """Test that the check_karpenter_best_practices tool is registered correctly."""
+        tool = mcp._tool_manager.get_tool('check_karpenter_best_practices')
+        assert tool is not None
+        assert tool.name == 'check_karpenter_best_practices'
+        assert 'Check EKS cluster for Karpenter best practices' in tool.description
+
+    def test_check_cluster_autoscaler_best_practices_registration(self):
+        """Test that the check_cluster_autoscaler_best_practices tool is registered correctly."""
+        tool = mcp._tool_manager.get_tool('check_cluster_autoscaler_best_practices')
+        assert tool is not None
+        assert tool.name == 'check_cluster_autoscaler_best_practices'
+        assert 'Check EKS cluster for Cluster Autoscaler best practices' in tool.description

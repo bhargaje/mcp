@@ -1672,10 +1672,12 @@ class EKSResiliencyHandler:
             error_message = f'Error checking node autoscaling: {str(e)}'
             return self._create_check_result('D1', False, [], error_message)
 
-    def _check_d2(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_d2(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check D2: Worker nodes spread across multiple AZs."""
         try:
             logger.info(f'Checking multi-AZ node distribution for cluster: {cluster_name}')
+            
+            k8s_client = shared_data.get('k8s_client')
             
             # Get all nodes using Kubernetes API
             nodes_response = k8s_client.list_resources(kind='Node', api_version='v1')
@@ -1778,13 +1780,15 @@ class EKSResiliencyHandler:
             }
             return self._create_check_result('D2', False, [], str(error_details))
 
-    def _check_d3(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_d3(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check D3: Configure Resource Requests/Limits."""
         deployments_without_resources = []
         try:
             logger.info(
                 f'Starting resource requests/limits check, namespace: {namespace if namespace else "all"}'
             )
+
+            k8s_client = shared_data.get('k8s_client')
 
             # Prepare kwargs for filtering
             kwargs = {}
@@ -1843,11 +1847,13 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking resource requests/limits {scope_info}: {str(e)}'
             return self._create_check_result('D3', False, [], error_message)
 
-    def _check_d4(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_d4(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check D4: Namespace ResourceQuotas."""
         namespaces_without_quotas = []
         try:
             logger.info('Starting namespace resource quotas check')
+
+            k8s_client = shared_data.get('k8s_client')
 
             # Get all namespaces
             namespaces_response = k8s_client.list_resources(kind='Namespace', api_version='v1')
@@ -1906,11 +1912,13 @@ class EKSResiliencyHandler:
             error_message = f'Error checking namespace resource quotas: {str(e)}'
             return self._create_check_result('D4', False, [], error_message)
 
-    def _check_d5(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_d5(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check D5: Namespace LimitRanges."""
         namespaces_without_limits = []
         try:
             logger.info('Starting namespace limit ranges check')
+
+            k8s_client = shared_data.get('k8s_client')
 
             # Get all namespaces
             namespaces_response = k8s_client.list_resources(kind='Namespace', api_version='v1')
@@ -1969,10 +1977,12 @@ class EKSResiliencyHandler:
             error_message = f'Error checking namespace limit ranges: {str(e)}'
             return self._create_check_result('D5', False, [], error_message)
 
-    def _check_d6(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_d6(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check D6: Monitor CoreDNS metrics."""
         try:
             logger.info('Starting CoreDNS metrics check')
+
+            k8s_client = shared_data.get('k8s_client')
 
             # Check for CoreDNS deployment
             coredns_found = False
@@ -1995,7 +2005,7 @@ class EKSResiliencyHandler:
             monitoring_found = False
             try:
                 # Check for Prometheus ServiceMonitor
-                k8s_api.api_client.call_api(
+                k8s_client.api_client.call_api(
                     '/apis/monitoring.coreos.com/v1',
                     'GET',
                     auth_settings=['BearerToken'],
@@ -2036,7 +2046,7 @@ class EKSResiliencyHandler:
             error_message = f'Error checking CoreDNS metrics: {str(e)}'
             return self._create_check_result('D6', False, [], error_message)
 
-    def _check_d7(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_d7(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check D7: CoreDNS Configuration."""
         try:
             logger.info(f'Starting CoreDNS configuration check for cluster: {cluster_name}')
@@ -2044,6 +2054,8 @@ class EKSResiliencyHandler:
             if not cluster_name:
                 details = 'No cluster name provided'
                 return self._create_check_result('D7', False, [], details)
+
+            k8s_client = shared_data.get('k8s_client')
 
             # Create EKS client using AwsHelper
             eks_client = AwsHelper.create_boto3_client('eks')

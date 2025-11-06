@@ -624,20 +624,20 @@ class EKSClusterAutoscalerHandler:
                 deployment = ca_dep['deployment']
                 deployment_name = f"{ca_dep['namespace']}/{ca_dep['name']}"
                 containers = deployment.spec.template.spec.get('containers', [])
-                    
-                    for container in containers:
-                        if 'cluster-autoscaler' in container.get('name', '').lower():
-                            image = container.get('image', '')
-                            
-                            # Extract version from image tag
-                            if ':v' in image:
-                                ca_version = image.split(':v')[1].split('.')[0] + '.' + image.split(':v')[1].split('.')[1]
-                                if ca_version == cluster_version:
-                                    compliant_deployments.append(deployment_name)
-                                else:
-                                    version_issues.append(f"{deployment_name} - CA version {ca_version} != cluster version {cluster_version}")
+                
+                for container in containers:
+                    if 'cluster-autoscaler' in container.get('name', '').lower():
+                        image = container.get('image', '')
+                        
+                        # Extract version from image tag
+                        if ':v' in image:
+                            ca_version = image.split(':v')[1].split('.')[0] + '.' + image.split(':v')[1].split('.')[1]
+                            if ca_version == cluster_version:
+                                compliant_deployments.append(deployment_name)
                             else:
-                                version_issues.append(f"{deployment_name} - cannot determine CA version from image {image}")
+                                version_issues.append(f"{deployment_name} - CA version {ca_version} != cluster version {cluster_version}")
+                        else:
+                            version_issues.append(f"{deployment_name} - cannot determine CA version from image {image}")
             
             if not compliant_deployments and not version_issues:
                 return self._create_check_result(
@@ -699,20 +699,20 @@ class EKSClusterAutoscalerHandler:
                 deployment = ca_dep['deployment']
                 deployment_name = f"{ca_dep['namespace']}/{ca_dep['name']}"
                 containers = deployment.spec.template.spec.get('containers', [])
-                    
-                    for container in containers:
-                        if 'cluster-autoscaler' in container.get('name', '').lower():
-                            command = container.get('command', [])
-                            args = container.get('args', [])
-                            all_args = command + args
-                            
-                            # Check for auto-discovery configuration
-                            has_auto_discovery = any('--node-group-auto-discovery' in str(arg) for arg in all_args)
-                            
-                            if not has_auto_discovery:
-                                auto_discovery_issues.append(f"{deployment_name} - auto-discovery not enabled")
-                            else:
-                                compliant_deployments.append(deployment_name)
+                
+                for container in containers:
+                    if 'cluster-autoscaler' in container.get('name', '').lower():
+                        command = container.get('command', [])
+                        args = container.get('args', [])
+                        all_args = command + args
+                        
+                        # Check for auto-discovery configuration
+                        has_auto_discovery = any('--node-group-auto-discovery' in str(arg) for arg in all_args)
+                        
+                        if not has_auto_discovery:
+                            auto_discovery_issues.append(f"{deployment_name} - auto-discovery not enabled")
+                        else:
+                            compliant_deployments.append(deployment_name)
             
             if not compliant_deployments and not auto_discovery_issues:
                 return self._create_check_result(
