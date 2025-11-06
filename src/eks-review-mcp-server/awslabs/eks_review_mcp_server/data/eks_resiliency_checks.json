@@ -5,98 +5,98 @@
       "description": "Check for pods without controller management",
       "category": "application",
       "severity": "high",
-      "remediation": "Convert singleton pods to Deployments, StatefulSets, or other controllers:\n\n1. Create a Deployment/StatefulSet manifest with the same pod spec\n2. Apply the new controller resource\n3. Delete the standalone pod once the controller-managed pod is running\n\nExample:\n```yaml\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: my-app\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: my-app\n  template:\n    metadata:\n      labels:\n        app: my-app\n    spec:\n      # Copy your pod spec here\n```"
+      "enabled": true
     },
     "A2": {
       "name": "Run multiple replicas",
       "description": "Check for deployments with only one replica",
       "category": "application",
       "severity": "medium",
-      "remediation": "Increase the number of replicas for your deployments and statefulsets:\n\nFor Deployments:\n```yaml\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: my-app\nspec:\n  replicas: 2  # Increase this to at least 2 for high availability\n  # ... rest of deployment spec\n```\n\nFor StatefulSets:\n```yaml\napiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: my-app\nspec:\n  replicas: 2  # Increase this to at least 2 for high availability\n  # ... rest of statefulset spec\n```\n\nYou can also use the kubectl scale command:\n```bash\nkubectl scale deployment/my-deployment --replicas=2\nkubectl scale statefulset/my-statefulset --replicas=2\n```"
+      "enabled": true
     },
     "A3": {
       "name": "Use pod anti-affinity",
       "description": "Multi-replica deployments without pod anti-affinity",
       "category": "application",
       "severity": "medium",
-      "remediation": "Add pod anti-affinity rules to spread replicas across nodes:\n\n```yaml\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: my-app\nspec:\n  replicas: 3\n  selector:\n    matchLabels:\n      app: my-app\n  template:\n    metadata:\n      labels:\n        app: my-app\n    spec:\n      affinity:\n        podAntiAffinity:\n          preferredDuringSchedulingIgnoredDuringExecution:\n          - weight: 100\n            podAffinityTerm:\n              labelSelector:\n                matchExpressions:\n                - key: app\n                  operator: In\n                  values:\n                  - my-app\n              topologyKey: kubernetes.io/hostname\n      containers:\n      - name: my-app\n        image: my-app:latest\n```"
+      "enabled": true
     },
     "A4": {
       "name": "Use liveness probes",
       "description": "Deployments without liveness probes",
       "category": "application",
       "severity": "high",
-      "remediation": "Add liveness probes to your containers:\n\n```yaml\napiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n      - name: my-app\n        image: my-app:latest\n        livenessProbe:\n          httpGet:\n            path: /health\n            port: 8080\n          initialDelaySeconds: 30\n          periodSeconds: 10\n          timeoutSeconds: 5\n          failureThreshold: 3\n```\n\nFor TCP-based health checks:\n```yaml\nlivenessProbe:\n  tcpSocket:\n    port: 8080\n  initialDelaySeconds: 30\n  periodSeconds: 10\n```"
+      "enabled": true
     },
     "A5": {
       "name": "Use readiness probes",
       "description": "Deployments without readiness probes",
       "category": "application",
       "severity": "high",
-      "remediation": "Add readiness probes to your containers:\n\n```yaml\napiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n      - name: my-app\n        image: my-app:latest\n        readinessProbe:\n          httpGet:\n            path: /ready\n            port: 8080\n          initialDelaySeconds: 5\n          periodSeconds: 5\n          timeoutSeconds: 3\n          failureThreshold: 3\n```\n\nFor command-based readiness checks:\n```yaml\nreadinessProbe:\n  exec:\n    command:\n    - /bin/sh\n    - -c\n    - \"ps aux | grep '[m]y-app'\"\n  initialDelaySeconds: 5\n  periodSeconds: 5\n```"
+      "enabled": true
     },
     "A6": {
       "name": "Use Pod Disruption Budgets",
       "description": "Critical workloads without Pod Disruption Budgets",
       "category": "application",
       "severity": "medium",
-      "remediation": "Create Pod Disruption Budgets for critical workloads:\n\n```yaml\napiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata:\n  name: my-app-pdb\nspec:\n  minAvailable: 1\n  selector:\n    matchLabels:\n      app: my-app\n```\n\nOr using percentage:\n```yaml\napiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata:\n  name: my-app-pdb\nspec:\n  minAvailable: 50%\n  selector:\n    matchLabels:\n      app: my-app\n```"
+      "enabled": true
     },
     "A7": {
       "name": "Run Kubernetes Metrics Server",
       "description": "Kubernetes Metrics Server availability",
       "category": "application",
       "severity": "medium",
-      "remediation": "Install Kubernetes Metrics Server:\n\n```bash\nkubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml\n```\n\nFor EKS clusters, you can also install via Helm:\n```bash\nhelm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/\nhelm upgrade --install metrics-server metrics-server/metrics-server -n kube-system\n```\n\nVerify installation:\n```bash\nkubectl get deployment metrics-server -n kube-system\nkubectl top nodes\n```"
+      "enabled": true
     },
     "A8": {
       "name": "Use Horizontal Pod Autoscaler",
       "description": "Multi-replica workloads without HPA",
       "category": "application",
       "severity": "medium",
-      "remediation": "Create Horizontal Pod Autoscalers for multi-replica workloads:\n\n```yaml\napiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata:\n  name: my-app-hpa\nspec:\n  scaleTargetRef:\n    apiVersion: apps/v1\n    kind: Deployment\n    name: my-app\n  minReplicas: 2\n  maxReplicas: 10\n  metrics:\n  - type: Resource\n    resource:\n      name: cpu\n      target:\n        type: Utilization\n        averageUtilization: 70\n  - type: Resource\n    resource:\n      name: memory\n      target:\n        type: Utilization\n        averageUtilization: 80\n```\n\nUsing kubectl:\n```bash\nkubectl autoscale deployment my-app --cpu-percent=70 --min=2 --max=10\n```"
+      "enabled": true
     },
     "A9": {
       "name": "Use custom metrics scaling",
       "description": "Custom metrics scaling capability",
       "category": "application",
       "severity": "low",
-      "remediation": "Install custom metrics infrastructure:\n\n### Option 1: Prometheus Adapter\n```bash\nhelm repo add prometheus-community https://prometheus-community.github.io/helm-charts\nhelm install prometheus-adapter prometheus-community/prometheus-adapter \\\n  --set prometheus.url=http://prometheus-server.monitoring.svc.cluster.local\n```\n\n### Option 2: KEDA (Event-driven autoscaling)\n```bash\nhelm repo add kedacore https://kedacore.github.io/charts\nhelm install keda kedacore/keda --namespace keda-system --create-namespace\n```\n\nExample KEDA ScaledObject:\n```yaml\napiVersion: keda.sh/v1alpha1\nkind: ScaledObject\nmetadata:\n  name: my-app-scaledobject\nspec:\n  scaleTargetRef:\n    name: my-app\n  triggers:\n  - type: prometheus\n    metadata:\n      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80\n      metricName: http_requests_per_second\n      threshold: '100'\n      query: sum(rate(http_requests_total[2m]))\n```"
+      "enabled": true
     },
     "A10": {
       "name": "Use Vertical Pod Autoscaler",
       "description": "Vertical Pod Autoscaler availability",
       "category": "application",
       "severity": "low",
-      "remediation": "Install and configure Vertical Pod Autoscaler:\n\n### Installation\n```bash\ngit clone https://github.com/kubernetes/autoscaler.git\ncd autoscaler/vertical-pod-autoscaler/\n./hack/vpa-install.sh\n```\n\n### Create VPA resource\n```yaml\napiVersion: autoscaling.k8s.io/v1\nkind: VerticalPodAutoscaler\nmetadata:\n  name: my-app-vpa\nspec:\n  targetRef:\n    apiVersion: apps/v1\n    kind: Deployment\n    name: my-app\n  updatePolicy:\n    updateMode: \"Auto\"\n  resourcePolicy:\n    containerPolicies:\n    - containerName: my-app\n      maxAllowed:\n        cpu: 1\n        memory: 500Mi\n      minAllowed:\n        cpu: 100m\n        memory: 50Mi\n```\n\nFor recommendation-only mode:\n```yaml\nupdatePolicy:\n  updateMode: \"Off\"\n```"
+      "enabled": true
     },
     "A11": {
       "name": "Use preStop hooks",
       "description": "PreStop hooks for graceful termination",
       "category": "application",
       "severity": "medium",
-      "remediation": "Add preStop hooks for graceful termination:\n\n```yaml\napiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n      - name: my-app\n        image: my-app:latest\n        lifecycle:\n          preStop:\n            exec:\n              command:\n              - /bin/sh\n              - -c\n              - \"sleep 15; /app/graceful-shutdown.sh\"\n```\n\nFor HTTP-based graceful shutdown:\n```yaml\nlifecycle:\n  preStop:\n    httpGet:\n      path: /shutdown\n      port: 8080\n      scheme: HTTP\n```\n\nAlso increase terminationGracePeriodSeconds:\n```yaml\nspec:\n  template:\n    spec:\n      terminationGracePeriodSeconds: 30\n```"
+      "enabled": true
     },
     "A12": {
       "name": "Use a Service Mesh",
       "description": "Service mesh implementation",
       "category": "application",
       "severity": "low",
-      "remediation": "Install a service mesh solution:\n\n### Option 1: Istio\n```bash\ncurl -L https://istio.io/downloadIstio | sh -\ncd istio-*\nexport PATH=$PWD/bin:$PATH\nistioctl install --set values.defaultRevision=default\nkubectl label namespace default istio-injection=enabled\n```\n\n### Option 2: Linkerd\n```bash\ncurl --proto '=https' --tlsv1.2 -sSfL https://run.linkerd.io/install | sh\nlinkerd check --pre\nlinkerd install --crds | kubectl apply -f -\nlinkerd install | kubectl apply -f -\nlinkerd check\n```\n\n### Option 3: AWS App Mesh\n```bash\nhelm repo add eks https://aws.github.io/eks-charts\nkubectl create namespace appmesh-system\nhelm upgrade -i appmesh-controller eks/appmesh-controller \\\n  --namespace appmesh-system\n```"
+      "enabled": true
     },
     "A13": {
       "name": "Monitor your applications",
       "description": "Application monitoring solution",
       "category": "application",
       "severity": "high",
-      "remediation": "Install monitoring infrastructure:\n\n### Option 1: Prometheus + Grafana\n```bash\nhelm repo add prometheus-community https://prometheus-community.github.io/helm-charts\nhelm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \\\n  --namespace monitoring --create-namespace\n```\n\n### Option 2: CloudWatch Container Insights\n```bash\ncurl https://raw.githubusercontent.com/aws-samples/amazon-cloudwatch-container-insights/latest/k8s-deployment-manifest-templates/deployment-mode/daemonset/container-insights-monitoring/quickstart/cwagent-fluentd-quickstart.yaml | sed 's/{{cluster_name}}/YOUR_CLUSTER_NAME/' | kubectl apply -f -\n```\n\n### Option 3: Datadog\n```bash\nhelm repo add datadog https://helm.datadoghq.com\nhelm install datadog-agent datadog/datadog \\\n  --set datadog.apiKey=YOUR_API_KEY \\\n  --set datadog.clusterName=YOUR_CLUSTER_NAME\n```"
+      "enabled": true
     },
     "A14": {
       "name": "Use centralized logging",
       "description": "Centralized logging solution",
       "category": "application",
       "severity": "medium",
-      "remediation": "Install centralized logging infrastructure:\n\n### Option 1: ELK Stack\n```bash\nhelm repo add elastic https://helm.elastic.co\nhelm install elasticsearch elastic/elasticsearch --namespace logging --create-namespace\nhelm install kibana elastic/kibana --namespace logging\nhelm install filebeat elastic/filebeat --namespace logging\n```\n\n### Option 2: Fluent Bit + CloudWatch\n```bash\ncurl https://raw.githubusercontent.com/aws-samples/amazon-cloudwatch-container-insights/latest/k8s-deployment-manifest-templates/deployment-mode/daemonset/container-insights-monitoring/fluent-bit/fluent-bit.yaml | sed 's/{{cluster_name}}/YOUR_CLUSTER_NAME/' | kubectl apply -f -\n```\n\n### Option 3: Loki + Grafana\n```bash\nhelm repo add grafana https://grafana.github.io/helm-charts\nhelm install loki grafana/loki-stack --namespace logging --create-namespace\n```"
+      "enabled": true
     }
   },
   "control_plane_checks": {
@@ -105,35 +105,36 @@
       "description": "Check if control plane logging is enabled",
       "category": "control_plane",
       "severity": "medium",
-      "remediation": "Enable control plane logging in your EKS cluster:\n\n### Using AWS CLI:\n```bash\naws eks update-cluster-config \\\n    --region us-west-2 \\\n    --name my-cluster \\\n    --logging '{\"enable\":[{\"types\":[\"api\",\"audit\",\"authenticator\",\"controllerManager\",\"scheduler\"]}]}'\n```\n\n### Using CloudFormation:\n```yaml\nResources:\n  EKSCluster:\n    Type: AWS::EKS::Cluster\n    Properties:\n      Logging:\n        ClusterLogging:\n          EnabledTypes:\n            - Type: api\n            - Type: audit\n            - Type: authenticator\n            - Type: controllerManager\n            - Type: scheduler\n```\n\n### Using Terraform:\n```hcl\nresource \"aws_eks_cluster\" \"example\" {\n  enabled_cluster_log_types = [\"api\", \"audit\", \"authenticator\", \"controllerManager\", \"scheduler\"]\n}\n```"
+      "enabled": true
     },
     "C2": {
       "name": "Cluster Authentication",
       "description": "Check cluster authentication configuration",
       "category": "control_plane",
       "severity": "high",
-      "remediation": "Configure proper cluster authentication:\n\n### Option 1: EKS Access Entries (Recommended)\n```bash\n# Create access entry for a user\naws eks create-access-entry \\\n    --cluster-name my-cluster \\\n    --principal-arn arn:aws:iam::123456789012:user/my-user\n\n# Associate access policy\naws eks associate-access-policy \\\n    --cluster-name my-cluster \\\n    --principal-arn arn:aws:iam::123456789012:user/my-user \\\n    --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \\\n    --access-scope type=cluster\n```\n\n### Option 2: aws-auth ConfigMap (Legacy)\n```yaml\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: aws-auth\n  namespace: kube-system\ndata:\n  mapUsers: |\n    - userarn: arn:aws:iam::123456789012:user/my-user\n      username: my-user\n      groups:\n        - system:masters\n  mapRoles: |\n    - rolearn: arn:aws:iam::123456789012:role/my-role\n      username: my-role\n      groups:\n        - system:masters\n```"
+      "enabled": true
     },
     "C3": {
       "name": "Running large clusters",
       "description": "Large cluster optimization checks",
       "category": "control_plane",
       "severity": "medium",
-      "remediation": "Optimize settings for large clusters (>1000 services):\n\n### Enable IPVS mode for kube-proxy\n```yaml\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: kube-proxy-config\n  namespace: kube-system\ndata:\n  config.conf: |\n    apiVersion: kubeproxy.config.k8s.io/v1alpha1\n    kind: KubeProxyConfiguration\n    mode: \"ipvs\"\n    ipvs:\n      scheduler: \"rr\"\n```\n\n### Configure AWS VPC CNI IP caching\n```bash\nkubectl set env daemonset aws-node -n kube-system WARM_IP_TARGET=10\nkubectl set env daemonset aws-node -n kube-system MINIMUM_IP_TARGET=5\n```\n\n### Or via ConfigMap:\n```yaml\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: amazon-vpc-cni\n  namespace: kube-system\ndata:\n  enable-pod-eni: \"false\"\n  warm-ip-target: \"10\"\n  minimum-ip-target: \"5\"\n```"
+      "enabled": true,
+      "skip_for_auto_mode": true
     },
     "C4": {
       "name": "EKS Control Plane Endpoint Access Control",
       "description": "API server endpoint access control",
       "category": "control_plane",
       "severity": "high",
-      "remediation": "Restrict API server endpoint access:\n\n### Using AWS CLI:\n```bash\n# Private endpoint only\naws eks update-cluster-config \\\n    --name my-cluster \\\n    --resources-vpc-config endpointConfigPrivateAccess=true,endpointConfigPublicAccess=false\n\n# Public + Private with CIDR restrictions\naws eks update-cluster-config \\\n    --name my-cluster \\\n    --resources-vpc-config endpointConfigPrivateAccess=true,endpointConfigPublicAccess=true,publicAccessCidrs=[\"203.0.113.0/24\"]\n```\n\n### Using CloudFormation:\n```yaml\nResources:\n  EKSCluster:\n    Type: AWS::EKS::Cluster\n    Properties:\n      ResourcesVpcConfig:\n        EndpointConfigPrivateAccess: true\n        EndpointConfigPublicAccess: true\n        PublicAccessCidrs:\n          - \"203.0.113.0/24\"\n```\n\n### Using Terraform:\n```hcl\nresource \"aws_eks_cluster\" \"example\" {\n  vpc_config {\n    endpoint_private_access = true\n    endpoint_public_access  = true\n    public_access_cidrs     = [\"203.0.113.0/24\"]\n  }\n}\n```"
+      "enabled": true
     },
     "C5": {
       "name": "Avoid catch-all admission webhooks",
       "description": "Check for overly broad admission webhooks",
       "category": "control_plane",
       "severity": "medium",
-      "remediation": "Review and restrict admission webhook scope:\n\n### Example of properly scoped webhook:\n```yaml\napiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionWebhook\nmetadata:\n  name: my-webhook\nwebhooks:\n- name: my-webhook.example.com\n  rules:\n  - operations: [\"CREATE\", \"UPDATE\"]\n    apiGroups: [\"apps\"]\n    apiVersions: [\"v1\"]\n    resources: [\"deployments\"]\n  namespaceSelector:\n    matchLabels:\n      webhook: \"enabled\"\n  objectSelector:\n    matchLabels:\n      app: \"my-app\"\n```\n\n### Avoid these patterns:\n```yaml\n# BAD: Catch-all rules\nrules:\n- operations: [\"*\"]\n  apiGroups: [\"*\"]\n  apiVersions: [\"*\"]\n  resources: [\"*\"]\n\n# BAD: No selectors\n# Missing namespaceSelector and objectSelector\n```\n\n### Best practices:\n1. Use specific API groups, versions, and resources\n2. Add namespace selectors to limit scope\n3. Use object selectors when possible\n4. Avoid wildcard (*) in rules\n5. Test webhook performance impact"
+      "enabled": true
     }
   },
   "data_plane_checks": {
@@ -142,49 +143,49 @@
       "description": "Check for node autoscaling configuration",
       "category": "data_plane",
       "severity": "high",
-      "remediation": "Install node autoscaling solution:\n\n### Option 1: Cluster Autoscaler\n```yaml\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: cluster-autoscaler\n  namespace: kube-system\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: cluster-autoscaler\n  template:\n    metadata:\n      labels:\n        app: cluster-autoscaler\n    spec:\n      containers:\n      - image: k8s.gcr.io/autoscaling/cluster-autoscaler:v1.21.0\n        name: cluster-autoscaler\n        command:\n        - ./cluster-autoscaler\n        - --v=4\n        - --stderrthreshold=info\n        - --cloud-provider=aws\n        - --skip-nodes-with-local-storage=false\n        - --expander=least-waste\n        - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/my-cluster\n```\n\n### Option 2: Karpenter\n```bash\n# Install Karpenter\nhelm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter --version ${KARPENTER_VERSION} --namespace karpenter --create-namespace\n```\n\n```yaml\napiVersion: karpenter.sh/v1beta1\nkind: NodePool\nmetadata:\n  name: default\nspec:\n  template:\n    spec:\n      requirements:\n        - key: kubernetes.io/arch\n          operator: In\n          values: [\"amd64\"]\n        - key: kubernetes.io/os\n          operator: In\n          values: [\"linux\"]\n        - key: karpenter.sh/capacity-type\n          operator: In\n          values: [\"spot\", \"on-demand\"]\n      nodeClassRef:\n        apiVersion: karpenter.k8s.aws/v1beta1\n        kind: EC2NodeClass\n        name: default\n```"
+      "enabled": true
     },
     "D2": {
       "name": "Worker nodes spread across multiple AZs",
       "description": "Check if nodes are distributed across availability zones",
       "category": "data_plane",
       "severity": "high",
-      "remediation": "Ensure worker nodes are distributed across multiple AZs:\n\n### For EKS Managed Node Groups:\n```bash\naws eks create-nodegroup \\\n    --cluster-name my-cluster \\\n    --nodegroup-name my-nodegroup \\\n    --subnets subnet-12345 subnet-67890 subnet-abcde \\\n    --instance-types m5.large \\\n    --ami-type AL2_x86_64 \\\n    --capacity-type ON_DEMAND\n```\n\n### Using CloudFormation:\n```yaml\nResources:\n  EKSNodeGroup:\n    Type: AWS::EKS::Nodegroup\n    Properties:\n      ClusterName: !Ref EKSCluster\n      Subnets:\n        - !Ref PrivateSubnet1  # AZ 1\n        - !Ref PrivateSubnet2  # AZ 2\n        - !Ref PrivateSubnet3  # AZ 3\n      InstanceTypes:\n        - m5.large\n      CapacityType: ON_DEMAND\n```\n\n### For Self-managed Node Groups:\n```yaml\napiVersion: v1\nkind: Node\nmetadata:\n  labels:\n    topology.kubernetes.io/zone: us-west-2a\n    kubernetes.io/arch: amd64\n    kubernetes.io/os: linux\n```\n\n### Verify distribution:\n```bash\nkubectl get nodes -o wide --show-labels | grep topology.kubernetes.io/zone\n```"
+      "enabled": true
     },
     "D3": {
       "name": "Configure Resource Requests/Limits",
       "description": "Check for proper resource constraints",
       "category": "data_plane",
       "severity": "high",
-      "remediation": "Configure resource requests and limits for all containers:\n\n### Example Deployment with resources:\n```yaml\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: my-app\nspec:\n  template:\n    spec:\n      containers:\n      - name: my-app\n        image: my-app:latest\n        resources:\n          requests:\n            memory: \"128Mi\"\n            cpu: \"100m\"\n          limits:\n            memory: \"256Mi\"\n            cpu: \"200m\"\n```\n\n### Resource guidelines:\n- **CPU requests**: Start with 100m (0.1 CPU) for small apps\n- **Memory requests**: Start with 128Mi for small apps\n- **CPU limits**: Set 2-4x the request value\n- **Memory limits**: Set 1.5-2x the request value\n\n### Quality of Service classes:\n- **Guaranteed**: requests = limits for all resources\n- **Burstable**: requests < limits or only requests set\n- **BestEffort**: no requests or limits set (avoid in production)\n\n### Use Vertical Pod Autoscaler for recommendations:\n```bash\nkubectl describe vpa my-app-vpa\n```"
+      "enabled": true
     },
     "D4": {
       "name": "Namespace ResourceQuotas",
       "description": "Check for namespace resource governance",
       "category": "data_plane",
       "severity": "medium",
-      "remediation": "Create ResourceQuotas for namespaces:\n\n### Basic ResourceQuota:\n```yaml\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: compute-quota\n  namespace: default\nspec:\n  hard:\n    requests.cpu: \"4\"\n    requests.memory: 8Gi\n    limits.cpu: \"8\"\n    limits.memory: 16Gi\n    persistentvolumeclaims: \"10\"\n    pods: \"10\"\n    services: \"5\"\n```\n\n### Advanced ResourceQuota with storage:\n```yaml\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: storage-quota\n  namespace: default\nspec:\n  hard:\n    requests.storage: 100Gi\n    persistentvolumeclaims: 10\n    gp2.storageclass.storage.k8s.io/requests.storage: 50Gi\n    gp3.storageclass.storage.k8s.io/requests.storage: 50Gi\n```\n\n### Object count quotas:\n```yaml\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: object-quota\n  namespace: default\nspec:\n  hard:\n    configmaps: \"10\"\n    secrets: \"10\"\n    services: \"5\"\n    services.loadbalancers: \"2\"\n```\n\n### Check quota usage:\n```bash\nkubectl describe quota -n default\n```"
+      "enabled": true
     },
     "D5": {
       "name": "Namespace LimitRanges",
       "description": "Check for namespace default resource limits",
       "category": "data_plane",
       "severity": "medium",
-      "remediation": "Create LimitRanges for namespaces:\n\n### Container LimitRange:\n```yaml\napiVersion: v1\nkind: LimitRange\nmetadata:\n  name: container-limit-range\n  namespace: default\nspec:\n  limits:\n  - type: Container\n    default:\n      cpu: \"200m\"\n      memory: \"256Mi\"\n    defaultRequest:\n      cpu: \"100m\"\n      memory: \"128Mi\"\n    max:\n      cpu: \"1\"\n      memory: \"1Gi\"\n    min:\n      cpu: \"50m\"\n      memory: \"64Mi\"\n```\n\n### Pod LimitRange:\n```yaml\napiVersion: v1\nkind: LimitRange\nmetadata:\n  name: pod-limit-range\n  namespace: default\nspec:\n  limits:\n  - type: Pod\n    max:\n      cpu: \"2\"\n      memory: \"2Gi\"\n    min:\n      cpu: \"100m\"\n      memory: \"128Mi\"\n```\n\n### PVC LimitRange:\n```yaml\napiVersion: v1\nkind: LimitRange\nmetadata:\n  name: pvc-limit-range\n  namespace: default\nspec:\n  limits:\n  - type: PersistentVolumeClaim\n    max:\n      storage: 100Gi\n    min:\n      storage: 1Gi\n```\n\n### Check LimitRange:\n```bash\nkubectl describe limitrange -n default\n```"
+      "enabled": true
     },
     "D6": {
       "name": "Monitor CoreDNS metrics",
       "description": "Check for DNS service monitoring",
       "category": "data_plane",
       "severity": "medium",
-      "remediation": "Enable CoreDNS metrics monitoring:\n\n### ServiceMonitor for Prometheus Operator:\n```yaml\napiVersion: monitoring.coreos.com/v1\nkind: ServiceMonitor\nmetadata:\n  name: coredns\n  namespace: kube-system\nspec:\n  selector:\n    matchLabels:\n      k8s-app: kube-dns\n  endpoints:\n  - port: metrics\n    interval: 30s\n    path: /metrics\n```\n\n### Prometheus scrape config:\n```yaml\nscrape_configs:\n- job_name: 'coredns'\n  static_configs:\n  - targets: ['coredns.kube-system.svc.cluster.local:9153']\n  metrics_path: /metrics\n  scrape_interval: 30s\n```\n\n### Key CoreDNS metrics to monitor:\n- `coredns_dns_requests_total`: Total DNS requests\n- `coredns_dns_responses_total`: Total DNS responses\n- `coredns_forward_requests_total`: Forwarded requests\n- `coredns_cache_hits_total`: Cache hits\n- `coredns_cache_misses_total`: Cache misses\n\n### Grafana dashboard:\n```bash\n# Import CoreDNS dashboard (ID: 5926)\nkubectl create configmap coredns-dashboard \\\n  --from-file=dashboard.json \\\n  -n monitoring\n```\n\n### CloudWatch Container Insights:\n```bash\n# CoreDNS metrics are automatically collected with Container Insights\naws logs describe-log-groups --log-group-name-prefix /aws/containerinsights/\n```"
+      "enabled": true
     },
     "D7": {
       "name": "CoreDNS Configuration",
       "description": "Check if CoreDNS is properly managed",
       "category": "data_plane",
       "severity": "low",
-      "remediation": "Use EKS Managed Add-on for CoreDNS:\n\n### Install CoreDNS as EKS Managed Add-on:\n```bash\naws eks create-addon \\\n    --cluster-name my-cluster \\\n    --addon-name coredns \\\n    --addon-version v1.10.1-eksbuild.1 \\\n    --resolve-conflicts OVERWRITE\n```\n\n### Update existing CoreDNS to managed add-on:\n```bash\n# Check current version\naws eks describe-addon-versions --addon-name coredns\n\n# Update to managed add-on\naws eks update-addon \\\n    --cluster-name my-cluster \\\n    --addon-name coredns \\\n    --addon-version v1.10.1-eksbuild.1 \\\n    --resolve-conflicts OVERWRITE\n```\n\n### Using CloudFormation:\n```yaml\nResources:\n  CoreDNSAddon:\n    Type: AWS::EKS::Addon\n    Properties:\n      ClusterName: !Ref EKSCluster\n      AddonName: coredns\n      AddonVersion: v1.10.1-eksbuild.1\n      ResolveConflicts: OVERWRITE\n```\n\n### Using Terraform:\n```hcl\nresource \"aws_eks_addon\" \"coredns\" {\n  cluster_name      = aws_eks_cluster.example.name\n  addon_name        = \"coredns\"\n  addon_version     = \"v1.10.1-eksbuild.1\"\n  resolve_conflicts = \"OVERWRITE\"\n}\n```\n\n### Benefits of managed add-on:\n- Automatic security patches\n- Simplified updates\n- Better integration with EKS\n- Reduced operational overhead"
+      "enabled": true
     }
   }
 }

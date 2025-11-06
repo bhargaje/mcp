@@ -1640,19 +1640,31 @@ class EKSResiliencyHandler:
     def _check_d2(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check D2: Worker nodes spread across multiple AZs."""
         try:
-            logger.info('Starting AZ distribution check')
-
-            # Get all nodes
+            logger.info(f'Checking multi-AZ node distribution for cluster: {cluster_name}')
+            
+            # Get all nodes using Kubernetes API
             nodes_response = k8s_api.list_resources(kind='Node', api_version='v1')
             
+            if not hasattr(nodes_response, 'items') or not nodes_response.items:
+                details = {
+                    'cluster_name': cluster_name,
+                    'error': 'No nodes found in cluster',
+                    'compliance_status': 'non-compliant',
+                    'risk_level': 'high'
+                }
+                return self._create_check_result('D2', False, [], str(details))
+            
+            # Extract AZ information from nodes
             az_distribution = {}
             total_nodes = 0
+            impacted_resources = []
             
             for node in nodes_response.items:
                 try:
                     node_dict = node.to_dict() if hasattr(node, 'to_dict') else node
                     metadata = node_dict.get('metadata', {})
                     labels = metadata.get('labels', {})
+                    node_name = metadata.get('name', 'unknown')
                     
                     # Get AZ from node labels
                     az = labels.get('topology.kubernetes.io/zone') or labels.get('failure-domain.beta.kubernetes.io/zone')
@@ -1660,40 +1672,76 @@ class EKSResiliencyHandler:
                     if az:
                         az_distribution[az] = az_distribution.get(az, 0) + 1
                         total_nodes += 1
+                    else:
+                        logger.warning(f'Node {node_name} missing AZ label')
+                        impacted_resources.append(f'Node: {node_name} (missing AZ label)')
+                        
                 except Exception as node_error:
                     logger.error(f'Error processing node: {str(node_error)}')
-
-            # Check distribution
+            
+            logger.info(f'Node distribution across AZs: {az_distribution}')
+            
+            # Analyze distribution
+            if total_nodes == 0:
+                details = {
+                    'cluster_name': cluster_name,
+                    'error': 'No nodes with AZ labels found',
+                    'compliance_status': 'non-compliant',
+                    'risk_level': 'high'
+                }
+                return self._create_check_result('D2', False, impacted_resources, str(details))
+            
+            # Check if nodes are distributed across multiple AZs
             num_azs = len(az_distribution)
-            is_compliant = num_azs >= 2
+            issues = []
             
-            if is_compliant:
-                # Check if distribution is reasonably balanced (within 20% variance)
-                if num_azs > 1:
-                    avg_nodes_per_az = total_nodes / num_azs
-                    max_variance = 0.2 * avg_nodes_per_az
-                    balanced = all(abs(count - avg_nodes_per_az) <= max_variance for count in az_distribution.values())
-                    
-                    if balanced:
-                        details = f'Nodes well distributed across {num_azs} AZs: {dict(az_distribution)}'
-                    else:
-                        details = f'Nodes spread across {num_azs} AZs but unbalanced: {dict(az_distribution)}'
-                else:
-                    details = f'Nodes distributed across {num_azs} AZs: {dict(az_distribution)}'
-                impacted_resources = []
+            if num_azs < 2:
+                is_compliant = False
+                issues.append(f'Nodes are only in {num_azs} availability zone(s). Minimum 2 AZs recommended for high availability.')
+                risk_level = 'high'
+                for az in az_distribution.keys():
+                    impacted_resources.append(f'All nodes in single AZ: {az}')
             else:
-                if num_azs == 1:
-                    details = f'All {total_nodes} nodes in single AZ: {list(az_distribution.keys())[0]}'
-                else:
-                    details = f'Only {total_nodes} nodes found, unable to determine AZ distribution'
-                impacted_resources = [cluster_name]
+                # Check for uneven distribution (more than 30% deviation)
+                expected_nodes_per_az = total_nodes / num_azs
+                max_deviation = 0
+                
+                for az, node_count in az_distribution.items():
+                    deviation = abs(node_count - expected_nodes_per_az) / expected_nodes_per_az
+                    max_deviation = max(max_deviation, deviation)
+                    
+                    if deviation > 0.3:  # 30% deviation threshold
+                        issues.append(f'AZ {az} has {node_count} nodes (expected ~{expected_nodes_per_az:.1f}), deviation: {deviation:.1%}')
+                        impacted_resources.append(f'AZ {az}: {node_count} nodes (uneven distribution)')
+                
+                is_compliant = max_deviation <= 0.3
+                risk_level = 'medium' if not is_compliant else 'low'
             
-            return self._create_check_result('D2', is_compliant, impacted_resources, details)
-
+            # Build details
+            details = {
+                'cluster_name': cluster_name,
+                'node_distribution': {
+                    'total_nodes': total_nodes,
+                    'availability_zones': num_azs,
+                    'distribution_by_az': az_distribution,
+                    'expected_nodes_per_az': round(total_nodes / num_azs, 1) if num_azs > 0 else 0
+                },
+                'compliance_status': 'compliant' if is_compliant else 'non-compliant',
+                'risk_level': risk_level,
+                'issues_found': issues
+            }
+            
+            return self._create_check_result('D2', is_compliant, impacted_resources, str(details))
+            
         except Exception as e:
-            logger.error(f'Error checking AZ distribution: {str(e)}')
-            error_message = f'Error checking AZ distribution: {str(e)}'
-            return self._create_check_result('D2', False, [], error_message)
+            logger.error(f'Error checking multi-AZ node distribution: {str(e)}')
+            import traceback
+            logger.error(f'Traceback: {traceback.format_exc()}')
+            error_details = {
+                'error': f'Failed to check multi-AZ node distribution: {str(e)}',
+                'cluster_name': cluster_name
+            }
+            return self._create_check_result('D2', False, [], str(error_details))
 
     def _check_d3(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check D3: Configure Resource Requests/Limits."""
