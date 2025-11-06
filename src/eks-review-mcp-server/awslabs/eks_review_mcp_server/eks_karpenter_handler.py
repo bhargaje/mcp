@@ -144,14 +144,43 @@ class EKSKarpenterHandler:
                 logger.error(f'Failed to get K8s client for cluster {cluster_name}: {str(e)}')
                 return self._create_error_response(cluster_name, str(e))
 
-            # First check if self-managed Karpenter is deployed
-            karpenter_result = await self._check_karpenter_deployment(k8s_client, cluster_name, namespace)
+            # Initialize clients and fetch shared data once (optimization)
+            shared_data = await self._initialize_clients_and_data(k8s_client, cluster_name, namespace)
+            if not shared_data:
+                return self._create_error_response(cluster_name, "Failed to initialize clients and fetch data")
+            
+            # Early exit for Auto Mode (optimization)
+            if shared_data.get('skip_karpenter_checks'):
+                logger.info('Auto Mode detected - skipping Karpenter checks')
+                auto_mode_features = shared_data.get('auto_mode_features', {})
+                enabled_features = [k for k, v in auto_mode_features.items() if v]
+                
+                check_results = [self._create_check_result(
+                    'A1',
+                    True,
+                    [],
+                    f'EKS Auto Mode is enabled ({", ".join(enabled_features)}) - Karpenter checks not applicable'
+                )]
+                
+                summary = f'Cluster {cluster_name} uses EKS Auto Mode - Karpenter checks not applicable'
+                
+                return KarpenterCheckResponse(
+                    isError=False,
+                    content=[TextContent(type='text', text=summary)],
+                    check_results=check_results,
+                    overall_compliant=True,
+                    summary=summary,
+                )
+            
+            # Check if Karpenter is deployed
+            karpenter_found = len(shared_data.get('karpenter_deployments', [])) > 0
+            karpenter_result = self._create_karpenter_deployment_result(shared_data, cluster_name)
             
             check_results = []
             all_compliant = True
             
             # If Karpenter is deployed, run all Karpenter checks
-            if karpenter_result['compliant']:
+            if karpenter_found:
                 logger.info('Self-managed Karpenter found - running Karpenter best practices checks')
                 
                 # Add the Karpenter deployment check result
@@ -164,7 +193,7 @@ class EKSKarpenterHandler:
                 for check_id in sorted(remaining_checks.keys()):
                     try:
                         logger.info(f'Running check {check_id}')
-                        result = await self._execute_check(check_id, k8s_client, cluster_name, namespace)
+                        result = await self._execute_check(check_id, shared_data, cluster_name)
                         check_results.append(result)
                         
                         if not result['compliant']:
@@ -178,19 +207,9 @@ class EKSKarpenterHandler:
                         check_results.append(error_result)
                         all_compliant = False
             else:
-                logger.info('Self-managed Karpenter not found - checking for Auto Mode')
-                
-                # Check if Auto Mode is enabled
-                auto_mode_result = await self._check_auto_mode(client, cluster_name)
-                check_results.append(auto_mode_result)
-                
-                if auto_mode_result['compliant']:
-                    logger.info('EKS Auto Mode is enabled - Karpenter checks not applicable')
-                    all_compliant = True  # Auto Mode enabled is compliant
-                else:
-                    logger.info('Neither Karpenter nor Auto Mode found - adding Karpenter deployment check')
-                    check_results.append(karpenter_result)
-                    all_compliant = False
+                logger.info('Neither Karpenter nor Auto Mode found')
+                check_results.append(karpenter_result)
+                all_compliant = False
 
             # Generate summary
             passed_count = sum(1 for r in check_results if r['compliant'])
@@ -209,13 +228,167 @@ class EKSKarpenterHandler:
             logger.error(f'Unexpected error in Karpenter best practices check: {str(e)}')
             return self._create_error_response(cluster_name, str(e))
 
-    async def _execute_check(self, check_id: str, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
-        """Execute a single check based on its ID."""
+    async def _initialize_clients_and_data(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Initialize clients and fetch shared data once (optimization)."""
+        try:
+            shared_data = {}
+            
+            # Initialize EKS client once
+            eks_client = AwsHelper.create_boto3_client('eks')
+            shared_data['eks_client'] = eks_client
+            
+            # Check Auto Mode FIRST (early exit optimization)
+            try:
+                cluster_response = eks_client.describe_cluster(name=cluster_name)
+                cluster_info = cluster_response['cluster']
+                shared_data['cluster_info'] = cluster_info
+                
+                compute_config = cluster_info.get('computeConfig', {})
+                storage_config = cluster_info.get('storageConfig', {})
+                kubernetes_network_config = cluster_info.get('kubernetesNetworkConfig', {})
+                elastic_load_balancing = kubernetes_network_config.get('elasticLoadBalancing', {})
+                
+                is_auto_mode = (
+                    compute_config.get('enabled', False) or
+                    storage_config.get('blockStorage', {}).get('enabled', False) or
+                    elastic_load_balancing.get('enabled', False)
+                )
+                
+                if is_auto_mode:
+                    logger.info('EKS Auto Mode detected - Karpenter checks not applicable')
+                    shared_data['is_auto_mode'] = True
+                    shared_data['skip_karpenter_checks'] = True
+                    shared_data['auto_mode_features'] = {
+                        'compute_enabled': compute_config.get('enabled', False),
+                        'storage_enabled': storage_config.get('blockStorage', {}).get('enabled', False),
+                        'elastic_load_balancing_enabled': elastic_load_balancing.get('enabled', False)
+                    }
+                    return shared_data  # Early exit!
+                
+                shared_data['is_auto_mode'] = False
+                
+            except Exception as e:
+                logger.warning(f'Failed to check Auto Mode: {str(e)}')
+                shared_data['is_auto_mode'] = False
+            
+            # Fetch Karpenter deployments ONCE
+            try:
+                deployments = k8s_client.list_resources(kind='Deployment', api_version='apps/v1')
+                karpenter_deployments = []
+                
+                for deployment in deployments.items:
+                    if 'karpenter' in deployment.metadata.name.lower():
+                        karpenter_deployments.append({
+                            'name': deployment.metadata.name,
+                            'namespace': deployment.metadata.namespace,
+                            'deployment': deployment
+                        })
+                
+                shared_data['karpenter_deployments'] = karpenter_deployments
+                logger.info(f'Found {len(karpenter_deployments)} Karpenter deployments')
+                
+                # Pre-parse Karpenter configuration (optimization)
+                karpenter_config = self._parse_karpenter_config(karpenter_deployments)
+                shared_data['karpenter_config'] = karpenter_config
+                
+            except Exception as e:
+                logger.warning(f'Failed to fetch Karpenter deployments: {str(e)}')
+                shared_data['karpenter_deployments'] = []
+                shared_data['karpenter_config'] = {}
+            
+            # Fetch NodePools ONCE (optimization - saves 8 API calls!)
+            try:
+                nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+                shared_data['nodepools'] = nodepools.items
+                shared_data['nodepool_count'] = len(nodepools.items)
+                logger.info(f'Found {len(nodepools.items)} Karpenter NodePools')
+            except Exception as e:
+                logger.warning(f'Failed to fetch NodePools: {str(e)}')
+                shared_data['nodepools'] = []
+                shared_data['nodepool_count'] = 0
+            
+            return shared_data
+            
+        except Exception as e:
+            logger.error(f'Failed to initialize clients and data: {str(e)}')
+            import traceback
+            logger.error(f'Traceback: {traceback.format_exc()}')
+            return None
+
+    def _parse_karpenter_config(self, karpenter_deployments: List) -> Dict[str, Any]:
+        """Parse Karpenter deployment configuration once (optimization)."""
+        config = {
+            'feature_gates': {},
+            'env_vars': {},
+            'resource_limits': {},
+            'resource_requests': {},
+            'version': None
+        }
+        
+        try:
+            for karp_dep in karpenter_deployments:
+                deployment = karp_dep['deployment']
+                containers = deployment.spec.template.spec.get('containers', [])
+                
+                for container in containers:
+                    if 'karpenter' in container.get('name', '').lower():
+                        # Extract version from image
+                        image = container.get('image', '')
+                        if ':v' in image:
+                            config['version'] = image.split(':v')[1].split('-')[0]  # Handle v0.32.0-abc format
+                        
+                        # Parse environment variables and feature gates
+                        env_vars = container.get('env', [])
+                        for env_var in env_vars:
+                            name = env_var.get('name')
+                            value = env_var.get('value', '')
+                            
+                            if name == 'FEATURE_GATES':
+                                # Parse feature gates (e.g., "SpotToSpotConsolidation=true,Drift=false")
+                                for gate in value.split(','):
+                                    if '=' in gate:
+                                        k, v = gate.split('=', 1)
+                                        config['feature_gates'][k.strip()] = v.strip().lower() == 'true'
+                            
+                            config['env_vars'][name] = value
+                        
+                        # Extract resource limits and requests
+                        resources = container.get('resources', {})
+                        config['resource_limits'] = resources.get('limits', {})
+                        config['resource_requests'] = resources.get('requests', {})
+                        
+                        break  # Found Karpenter container
+        
+        except Exception as e:
+            logger.warning(f'Failed to parse Karpenter config: {str(e)}')
+        
+        return config
+
+    def _create_karpenter_deployment_result(self, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
+        """Create K1 check result from shared data."""
+        karpenter_deployments = shared_data.get('karpenter_deployments', [])
+        
+        if karpenter_deployments:
+            deployment_names = [f"{d['namespace']}/{d['name']}" for d in karpenter_deployments]
+            return self._create_check_result(
+                'K1',
+                True,
+                deployment_names,
+                f'Karpenter deployment found: {deployment_names[0]}'
+            )
+        else:
+            return self._create_check_result(
+                'K1',
+                False,
+                [],
+                'Karpenter deployment not found - skipping remaining checks'
+            )
+
+    async def _execute_check(self, check_id: str, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
+        """Execute a single check based on its ID using shared data."""
         
         # Map check IDs to their corresponding methods
         check_methods = {
-            'A1': self._check_auto_mode,
-            'K1': self._check_karpenter_deployment,
             'K2': self._check_ami_lockdown,
             'K3': self._check_instance_type_exclusions,
             'K4': self._check_nodepool_exclusivity,
@@ -228,48 +401,20 @@ class EKSKarpenterHandler:
         
         method = check_methods.get(check_id)
         if method:
-            return await method(k8s_client, cluster_name, namespace)
+            return await method(shared_data, cluster_name)
         else:
             return self._create_check_error_result(check_id, f'Check method not implemented for {check_id}')
 
-    async def _check_karpenter_deployment(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
-        """Check if Karpenter is deployed."""
-        try:
-            # Check for Karpenter deployment across all namespaces
-            deployments = k8s_client.list_resources(kind='Deployment', api_version='apps/v1')
-            
-            karpenter_deployments = []
-            for deployment in deployments.items:
-                if 'karpenter' in deployment.metadata.name.lower():
-                    karpenter_deployments.append(f"{deployment.metadata.namespace}/{deployment.metadata.name}")
-            
-            if karpenter_deployments:
-                return self._create_check_result(
-                    'K1',
-                    True,
-                    karpenter_deployments,
-                    f'Karpenter deployment found: {karpenter_deployments[0]}'
-                )
-            else:
-                return self._create_check_result(
-                    'K1',
-                    False,
-                    [],
-                    'Karpenter deployment not found - skipping remaining checks'
-                )
-        except Exception as e:
-            return self._create_check_error_result('K1', str(e))
-
-    async def _check_ami_lockdown(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_ami_lockdown(self, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
         """Check if AMIs are locked down in NodePools."""
         try:
-            # Check for NodePool resources
-            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            # Use pre-fetched NodePools (optimization)
+            nodepools = shared_data.get('nodepools', [])
             
             unlocked_nodepools = []
             locked_nodepools = []
             
-            for nodepool in nodepools.items:
+            for nodepool in nodepools:
                 nodepool_name = nodepool.metadata.name
                 ami_selector = nodepool.spec.get('template', {}).get('spec', {}).get('amiFamily')
                 
@@ -296,16 +441,16 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K2', str(e))
 
-    async def _check_instance_type_exclusions(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_instance_type_exclusions(self, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
         """Check if instance types are properly excluded."""
         try:
-            # Check for NodePool resources
-            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            # Use pre-fetched NodePools (optimization)
+            nodepools = shared_data.get('nodepools', [])
             
             nodepools_without_exclusions = []
             nodepools_with_exclusions = []
             
-            for nodepool in nodepools.items:
+            for nodepool in nodepools:
                 nodepool_name = nodepool.metadata.name
                 requirements = nodepool.spec.get('template', {}).get('spec', {}).get('requirements', [])
                 
@@ -339,16 +484,16 @@ class EKSKarpenterHandler:
 
 
 
-    async def _check_nodepool_exclusivity(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_nodepool_exclusivity(self, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
         """Check if NodePools are mutually exclusive or weighted."""
         try:
-            # Check for NodePool resources
-            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            # Use pre-fetched NodePools (optimization)
+            nodepools = shared_data.get('nodepools', [])
             
             weighted_nodepools = []
             exclusive_nodepools = []
             
-            for nodepool in nodepools.items:
+            for nodepool in nodepools:
                 nodepool_name = nodepool.metadata.name
                 weight = nodepool.spec.get('weight')
                 taints = nodepool.spec.get('template', {}).get('spec', {}).get('taints', [])
@@ -359,7 +504,7 @@ class EKSKarpenterHandler:
                     exclusive_nodepools.append(nodepool_name)
             
             total_configured = len(weighted_nodepools) + len(exclusive_nodepools)
-            total_nodepools = len(nodepools.items)
+            total_nodepools = len(nodepools)
             
             if total_configured == total_nodepools:
                 return self._create_check_result(
@@ -379,16 +524,16 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K5', str(e))
 
-    async def _check_ttl_configuration(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_ttl_configuration(self, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
         """Check if TTL is configured for NodePools."""
         try:
-            # Check for NodePool resources
-            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            # Use pre-fetched NodePools (optimization)
+            nodepools = shared_data.get('nodepools', [])
             
             nodepools_without_ttl = []
             nodepools_with_ttl = []
             
-            for nodepool in nodepools.items:
+            for nodepool in nodepools:
                 nodepool_name = nodepool.metadata.name
                 expire_after = nodepool.spec.get('template', {}).get('spec', {}).get('expireAfter')
                 
@@ -414,16 +559,16 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K6', str(e))
 
-    async def _check_instance_type_diversity(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_instance_type_diversity(self, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
         """Check if NodePools allow sufficient instance type diversity."""
         try:
-            # Check for NodePool resources
-            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            # Use pre-fetched NodePools (optimization)
+            nodepools = shared_data.get('nodepools', [])
             
             constrained_nodepools = []
             diverse_nodepools = []
             
-            for nodepool in nodepools.items:
+            for nodepool in nodepools:
                 nodepool_name = nodepool.metadata.name
                 requirements = nodepool.spec.get('template', {}).get('spec', {}).get('requirements', [])
                 
@@ -457,16 +602,16 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K7', str(e))
 
-    async def _check_nodepool_limits(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_nodepool_limits(self, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
         """Check if NodePools have proper limits configured."""
         try:
-            # Check for NodePool resources
-            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            # Use pre-fetched NodePools (optimization)
+            nodepools = shared_data.get('nodepools', [])
             
             nodepools_without_limits = []
             nodepools_with_limits = []
             
-            for nodepool in nodepools.items:
+            for nodepool in nodepools:
                 nodepool_name = nodepool.metadata.name
                 limits = nodepool.spec.get('limits')
                 
@@ -492,16 +637,16 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K8', str(e))
 
-    async def _check_disruption_settings(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_disruption_settings(self, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
         """Check if disruption settings are properly configured."""
         try:
-            # Check for NodePool resources
-            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            # Use pre-fetched NodePools (optimization)
+            nodepools = shared_data.get('nodepools', [])
             
             nodepools_without_disruption = []
             nodepools_with_disruption = []
             
-            for nodepool in nodepools.items:
+            for nodepool in nodepools:
                 nodepool_name = nodepool.metadata.name
                 disruption = nodepool.spec.get('disruption', {})
                 
@@ -531,60 +676,48 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K9', str(e))
 
-    async def _check_auto_mode(self, k8s_client, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
-        """Check if EKS Auto Mode is enabled."""
+    async def _check_auto_mode(self, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
+        """Check if EKS Auto Mode is enabled (uses shared data - optimization)."""
         try:
             logger.info(f'A1 Check: Starting Auto Mode detection for cluster: {cluster_name}')
             
-            # Get AWS EKS client to check cluster configuration
-            eks_client = AwsHelper.create_boto3_client('eks')
-            logger.info(f'A1 Check: Created EKS client successfully')
+            # Use pre-fetched cluster info (optimization)
+            cluster_info = shared_data.get('cluster_info', {})
             
-            # Describe the cluster to check for Auto Mode
-            logger.info(f'A1 Check: Calling EKS describe_cluster API for cluster: {cluster_name}')
-            response = eks_client.describe_cluster(name=cluster_name)
+            compute_config = cluster_info.get('computeConfig', {})
+            storage_config = cluster_info.get('storageConfig', {})
+            kubernetes_network_config = cluster_info.get('kubernetesNetworkConfig', {})
+            elastic_load_balancing = kubernetes_network_config.get('elasticLoadBalancing', {})
             
-            # For ex-eks-terraform-auto-mode cluster, assume Auto Mode is enabled
-            # This is a temporary workaround for the API parsing issue
-            if 'auto-mode' in cluster_name.lower():
-                logger.info(f'A1 Check: Detected auto-mode cluster name - assuming Auto Mode is enabled')
+            auto_mode_enabled = (
+                compute_config.get('enabled', False) or
+                storage_config.get('blockStorage', {}).get('enabled', False) or
+                elastic_load_balancing.get('enabled', False)
+            )
+            
+            logger.info(f'A1 Check: Auto Mode enabled: {auto_mode_enabled}')
+            
+            if auto_mode_enabled:
+                enabled_features = []
+                if compute_config.get('enabled', False):
+                    enabled_features.append('compute')
+                if storage_config.get('blockStorage', {}).get('enabled', False):
+                    enabled_features.append('storage')
+                if elastic_load_balancing.get('enabled', False):
+                    enabled_features.append('elastic-load-balancing')
+                
                 return self._create_check_result(
                     'A1',
                     True,
                     [cluster_name],
-                    'EKS Auto Mode is enabled (detected from cluster name) - Karpenter checks not applicable'
+                    f'EKS Auto Mode is enabled ({", ".join(enabled_features)}) - Karpenter checks not applicable'
                 )
-            
-            # For other clusters, try to parse the API response
-            try:
-                cluster_info = response.get('cluster', {}) if isinstance(response, dict) else {}
-                compute_config = cluster_info.get('computeConfig', {})
-                node_pools = compute_config.get('nodePools', []) if compute_config else []
-                
-                auto_mode_enabled = len(node_pools) > 0
-                logger.info(f'A1 Check: Auto Mode enabled: {auto_mode_enabled}')
-                
-                if auto_mode_enabled:
-                    return self._create_check_result(
-                        'A1',
-                        True,
-                        [cluster_name],
-                        f'EKS Auto Mode is enabled with {len(node_pools)} managed node pools - Karpenter checks not applicable'
-                    )
-                else:
-                    return self._create_check_result(
-                        'A1',
-                        False,
-                        [],
-                        'EKS Auto Mode is not enabled'
-                    )
-            except Exception as parse_error:
-                logger.error(f'A1 Check: API response parsing failed: {str(parse_error)}')
+            else:
                 return self._create_check_result(
                     'A1',
                     False,
                     [],
-                    f'Auto Mode check failed due to API parsing: {str(parse_error)}'
+                    'EKS Auto Mode is not enabled'
                 )
             
         except Exception as e:
@@ -597,14 +730,14 @@ class EKSKarpenterHandler:
                 f'Auto Mode check failed: {str(e)}'
             )
 
-    async def _check_spot_consolidation(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_spot_consolidation(self, shared_data: Dict[str, Any], cluster_name: str) -> Dict[str, Any]:
         """Check if Spot capacity is used and spot-to-spot consolidation is enabled."""
         try:
-            # Check NodePools for Spot capacity usage
-            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            # Use pre-fetched NodePools (optimization)
+            nodepools = shared_data.get('nodepools', [])
             
             spot_nodepools = []
-            for nodepool in nodepools.items:
+            for nodepool in nodepools:
                 nodepool_name = nodepool.metadata.name
                 requirements = nodepool.spec.get('template', {}).get('spec', {}).get('requirements', [])
                 
@@ -628,23 +761,16 @@ class EKSKarpenterHandler:
                     'No Spot capacity configured in NodePools - check not applicable'
                 )
             
-            # Check Karpenter deployment for SpotToSpotConsolidation feature gate
-            deployments = k8s_client.list_resources(kind='Deployment', api_version='apps/v1')
+            # Use pre-parsed Karpenter config (optimization)
+            karpenter_config = shared_data.get('karpenter_config', {})
+            feature_gates = karpenter_config.get('feature_gates', {})
+            spot_consolidation_enabled = feature_gates.get('SpotToSpotConsolidation', False)
             
-            spot_consolidation_enabled = False
+            karpenter_deployments = shared_data.get('karpenter_deployments', [])
             karpenter_deployment = None
-            for deployment in deployments.items:
-                if 'karpenter' in deployment.metadata.name.lower():
-                    karpenter_deployment = f"{deployment.metadata.namespace}/{deployment.metadata.name}"
-                    containers = deployment.spec.get('template', {}).get('spec', {}).get('containers', [])
-                    for container in containers:
-                        env_vars = container.get('env', [])
-                        for env_var in env_vars:
-                            if env_var.get('name') == 'FEATURE_GATES':
-                                value = env_var.get('value', '')
-                                if 'SpotToSpotConsolidation=true' in value:
-                                    spot_consolidation_enabled = True
-                                    break
+            if karpenter_deployments:
+                karp_dep = karpenter_deployments[0]
+                karpenter_deployment = f"{karp_dep['namespace']}/{karp_dep['name']}"
             
             if spot_consolidation_enabled:
                 return self._create_check_result(

@@ -142,6 +142,11 @@ class EKSSecurityHandler:
                 logger.error(f'Failed to get K8s client for cluster {cluster_name}: {str(e)}')
                 return self._create_error_response(cluster_name, str(e))
 
+            # Initialize shared data once (optimization)
+            shared_data = await self._initialize_shared_data(k8s_client, cluster_name, namespace)
+            if not shared_data:
+                return self._create_error_response(cluster_name, "Failed to initialize shared data")
+
             # Run all checks
             check_results = []
             all_compliant = True
@@ -152,7 +157,7 @@ class EKSSecurityHandler:
             for check_id in sorted(all_checks.keys()):
                 try:
                     logger.info(f'Running check {check_id}')
-                    result = await self._execute_check(check_id, k8s_client, cluster_name, namespace)
+                    result = await self._execute_check(check_id, shared_data, cluster_name, namespace)
                     check_results.append(result)
                     
                     if not result['compliant']:
@@ -183,8 +188,103 @@ class EKSSecurityHandler:
             logger.error(f'Unexpected error in security check: {str(e)}')
             return self._create_error_response(cluster_name, str(e))
 
-    async def _execute_check(self, check_id: str, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
-        """Execute a single check based on its ID."""
+    async def _initialize_shared_data(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Initialize shared data once to avoid redundant API calls (optimization)."""
+        try:
+            shared_data = {}
+            
+            # Initialize AWS clients once
+            import boto3
+            shared_data['eks_client'] = boto3.client('eks')
+            shared_data['ec2_client'] = boto3.client('ec2')
+            
+            # Fetch cluster info ONCE (used by I1, I2, I8, D1)
+            try:
+                response = shared_data['eks_client'].describe_cluster(name=cluster_name)
+                shared_data['cluster_info'] = response['cluster']
+                logger.info('Fetched cluster info once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch cluster info: {str(e)}')
+                shared_data['cluster_info'] = {}
+            
+            # Fetch addons ONCE (used by I5, I8)
+            try:
+                addons = shared_data['eks_client'].list_addons(clusterName=cluster_name)
+                shared_data['addons'] = addons.get('addons', [])
+                logger.info(f'Fetched {len(shared_data["addons"])} addons once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch addons: {str(e)}')
+                shared_data['addons'] = []
+            
+            # Fetch node groups ONCE (used by I6, IS1, IS2, IS3)
+            try:
+                node_groups = shared_data['eks_client'].list_nodegroups(clusterName=cluster_name)
+                shared_data['nodegroups'] = node_groups.get('nodegroups', [])
+                logger.info(f'Fetched {len(shared_data["nodegroups"])} node groups once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch node groups: {str(e)}')
+                shared_data['nodegroups'] = []
+            
+            # Fetch pods ONCE (used by I7, P2, P3, P4, P5, P6, M3)
+            try:
+                if namespace:
+                    pods = k8s_client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
+                else:
+                    pods = k8s_client.list_resources(kind='Pod', api_version='v1')
+                shared_data['pods'] = pods.items if hasattr(pods, 'items') else []
+                logger.info(f'Fetched {len(shared_data["pods"])} pods once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch pods: {str(e)}')
+                shared_data['pods'] = []
+            
+            # Fetch service accounts ONCE (used by I3, I8)
+            try:
+                if namespace:
+                    service_accounts = k8s_client.list_resources(kind='ServiceAccount', api_version='v1', namespace=namespace)
+                else:
+                    service_accounts = k8s_client.list_resources(kind='ServiceAccount', api_version='v1')
+                shared_data['service_accounts'] = service_accounts.items if hasattr(service_accounts, 'items') else []
+                logger.info(f'Fetched {len(shared_data["service_accounts"])} service accounts once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch service accounts: {str(e)}')
+                shared_data['service_accounts'] = []
+            
+            # Fetch namespaces ONCE (used by P1, M2)
+            try:
+                if namespace:
+                    namespaces = k8s_client.list_resources(kind='Namespace', api_version='v1', namespace=namespace)
+                else:
+                    namespaces = k8s_client.list_resources(kind='Namespace', api_version='v1')
+                shared_data['namespaces'] = namespaces.items if hasattr(namespaces, 'items') else []
+                logger.info(f'Fetched {len(shared_data["namespaces"])} namespaces once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch namespaces: {str(e)}')
+                shared_data['namespaces'] = []
+            
+            # Fetch nodes ONCE (used by M3)
+            try:
+                nodes = k8s_client.list_resources(kind='Node', api_version='v1')
+                shared_data['nodes'] = nodes.items if hasattr(nodes, 'items') else []
+                logger.info(f'Fetched {len(shared_data["nodes"])} nodes once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch nodes: {str(e)}')
+                shared_data['nodes'] = []
+            
+            # Store k8s_client for checks that need it
+            shared_data['k8s_client'] = k8s_client
+            shared_data['cluster_name'] = cluster_name
+            shared_data['namespace'] = namespace
+            
+            return shared_data
+            
+        except Exception as e:
+            logger.error(f'Failed to initialize shared data: {str(e)}')
+            import traceback
+            logger.error(f'Traceback: {traceback.format_exc()}')
+            return None
+
+    async def _execute_check(self, check_id: str, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Execute a single check based on its ID using shared data."""
         
         # Map check IDs to their corresponding methods
         check_methods = {
@@ -215,19 +315,15 @@ class EKSSecurityHandler:
         
         method = check_methods.get(check_id)
         if method:
-            return await method(k8s_client, cluster_name, namespace)
+            return await method(shared_data, cluster_name, namespace)
         else:
             return self._create_check_error_result(check_id, f'Check method not implemented for {check_id}')
 
-    async def _check_cluster_access_manager(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_cluster_access_manager(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if EKS Cluster Access Manager is configured."""
         try:
-            import boto3
-            eks_client = boto3.client('eks')
-            
-            # Get cluster configuration
-            response = eks_client.describe_cluster(name=cluster_name)
-            cluster = response['cluster']
+            # Use shared cluster info (optimization)
+            cluster = shared_data.get('cluster_info', {})
             
             # Check authentication mode
             access_config = cluster.get('accessConfig', {})
@@ -250,15 +346,11 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('I1', str(e))
 
-    async def _check_private_endpoint(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_private_endpoint(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if EKS cluster endpoint is private."""
         try:
-            import boto3
-            eks_client = boto3.client('eks')
-            
-            # Get cluster configuration
-            response = eks_client.describe_cluster(name=cluster_name)
-            cluster = response['cluster']
+            # Use shared cluster info (optimization)
+            cluster = shared_data.get('cluster_info', {})
             
             # Check endpoint configuration
             vpc_config = cluster.get('resourcesVpcConfig', {})
@@ -289,24 +381,14 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('I2', str(e))
 
-    async def _check_service_account_tokens(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_service_account_tokens(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check for service account token usage."""
         try:
-            # Use the K8sApis client to list service accounts
-            if namespace:
-                service_accounts = k8s_client.list_resources(
-                    kind='ServiceAccount',
-                    api_version='v1',
-                    namespace=namespace
-                )
-            else:
-                service_accounts = k8s_client.list_resources(
-                    kind='ServiceAccount',
-                    api_version='v1'
-                )
+            # Use shared service accounts (optimization)
+            service_accounts = shared_data.get('service_accounts', [])
             
             non_compliant_sa = []
-            for sa in service_accounts.items:
+            for sa in service_accounts:
                 # Check if automountServiceAccountToken is explicitly set to True or not set (defaults to True)
                 automount = sa.get('automountServiceAccountToken')
                 if automount is None or automount:
@@ -332,12 +414,13 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('I3', str(e))
 
-    async def _check_least_privileged_rbac(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_least_privileged_rbac(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check for overly permissive RoleBindings and ClusterRoleBindings."""
         try:
             # Check ClusterRoles and Roles for wildcard permissions
+            k8s_client = shared_data.get('k8s_client')
             cluster_roles = k8s_client.list_resources(kind='ClusterRole', api_version='rbac.authorization.k8s.io/v1')
-            roles = k8s_client.list_resources(kind='Role', api_version='rbac.authorization.k8s.io/v1', namespace=namespace) if namespace else client.list_resources(kind='Role', api_version='rbac.authorization.k8s.io/v1')
+            roles = k8s_client.list_resources(kind='Role', api_version='rbac.authorization.k8s.io/v1', namespace=namespace) if namespace else k8s_client.list_resources(kind='Role', api_version='rbac.authorization.k8s.io/v1')
             
             overly_permissive = []
             all_roles = []
@@ -383,16 +466,15 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('I4', str(e))
 
-    async def _check_pod_identity(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_pod_identity(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if EKS Pod Identity is configured."""
         try:
-            import boto3
-            eks_client = boto3.client('eks')
+            # Use shared addons (optimization)
+            addons = shared_data.get('addons', [])
             
             # Check if pod identity agent addon is installed
             try:
-                addons = eks_client.list_addons(clusterName=cluster_name)
-                pod_identity_addon = 'eks-pod-identity-agent' in addons.get('addons', [])
+                pod_identity_addon = 'eks-pod-identity-agent' in addons
                 
                 if pod_identity_addon:
                     return self._create_check_result(
@@ -413,19 +495,17 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('I5', str(e))
 
-    async def _check_imdsv2_enforcement(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_imdsv2_enforcement(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if IMDSv2 is enforced on worker nodes."""
         try:
-            import boto3
-            ec2_client = boto3.client('ec2')
-            
-            # Get node group instances
-            eks_client = boto3.client('eks')
-            node_groups = eks_client.list_nodegroups(clusterName=cluster_name)
+            # Use shared clients and node groups (optimization)
+            ec2_client = shared_data.get('ec2_client')
+            eks_client = shared_data.get('eks_client')
+            node_groups_list = shared_data.get('nodegroups', [])
             
             non_compliant_instances = []
             
-            for ng_name in node_groups.get('nodegroups', []):
+            for ng_name in node_groups_list:
                 ng_details = eks_client.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng_name)
                 
                 # Check launch template or instance configuration
@@ -458,18 +538,15 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('I6', str(e))
 
-    async def _check_non_root_user(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_non_root_user(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if pods run as non-root user."""
         try:
-            # Get all pods and check their security context
-            if namespace:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
-            else:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1')
+            # Use shared pods (optimization)
+            pods = shared_data.get('pods', [])
             
             root_pods = []
             
-            for pod in pods.items:
+            for pod in pods:
                 pod_name = pod.metadata.name
                 pod_namespace = pod.metadata.namespace
                 
@@ -503,15 +580,12 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('I7', str(e))
 
-    async def _check_irsa_configuration(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_irsa_configuration(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if IRSA is configured when Pod Identity is not available."""
         try:
-            import boto3
-            eks_client = boto3.client('eks')
-            
-            # First check if Pod Identity is enabled
-            addons = eks_client.list_addons(clusterName=cluster_name)
-            pod_identity_enabled = 'eks-pod-identity-agent' in addons.get('addons', [])
+            # Use shared addons and cluster info (optimization)
+            addons = shared_data.get('addons', [])
+            pod_identity_enabled = 'eks-pod-identity-agent' in addons
             
             if pod_identity_enabled:
                 return self._create_check_result(
@@ -521,9 +595,9 @@ class EKSSecurityHandler:
                     'Pod Identity is enabled, IRSA check not required'
                 )
             
-            # Check if OIDC is configured
-            cluster_info = eks_client.describe_cluster(name=cluster_name)
-            oidc_issuer = cluster_info['cluster'].get('identity', {}).get('oidc', {}).get('issuer')
+            # Use shared cluster info (optimization)
+            cluster_info = shared_data.get('cluster_info', {})
+            oidc_issuer = cluster_info.get('identity', {}).get('oidc', {}).get('issuer')
             
             if not oidc_issuer:
                 return self._create_check_result(
@@ -533,14 +607,11 @@ class EKSSecurityHandler:
                     'OIDC identity provider is not configured'
                 )
             
-            # Check service accounts for IRSA annotations
-            if namespace:
-                service_accounts = k8s_client.list_resources(kind='ServiceAccount', api_version='v1', namespace=namespace)
-            else:
-                service_accounts = k8s_client.list_resources(kind='ServiceAccount', api_version='v1')
+            # Use shared service accounts (optimization)
+            service_accounts = shared_data.get('service_accounts', [])
             
             irsa_configured_sa = []
-            for sa in service_accounts.items:
+            for sa in service_accounts:
                 annotations = sa.metadata.get('annotations', {})
                 if 'eks.amazonaws.com/role-arn' in annotations:
                     sa_name = sa.metadata.name
@@ -564,19 +635,16 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('I8', str(e))
 
-    async def _check_pod_security_standards(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_pod_security_standards(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if Pod Security Standards (PSS) and Pod Security Admission (PSA) is configured."""
         try:
-            # Check for PSA labels on namespaces
-            if namespace:
-                namespaces = k8s_client.list_resources(kind='Namespace', api_version='v1', namespace=namespace)
-            else:
-                namespaces = k8s_client.list_resources(kind='Namespace', api_version='v1')
+            # Use shared namespaces (optimization)
+            namespaces = shared_data.get('namespaces', [])
             
             non_compliant_ns = []
             psa_labels = ['pod-security.kubernetes.io/enforce', 'pod-security.kubernetes.io/audit', 'pod-security.kubernetes.io/warn']
             
-            for ns in namespaces.items:
+            for ns in namespaces:
                 ns_name = ns.metadata.name
                 labels = ns.metadata.get('labels', {})
                 
@@ -602,17 +670,15 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('P1', str(e))
 
-    async def _check_hostpath_usage(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_hostpath_usage(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check for hostPath volume usage."""
         try:
-            if namespace:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
-            else:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1')
+            # Use shared pods (optimization)
+            pods = shared_data.get('pods', [])
             
             hostpath_pods = []
             
-            for pod in pods.items:
+            for pod in pods:
                 pod_name = pod.metadata.name
                 pod_namespace = pod.metadata.namespace
                 volumes = pod.spec.get('volumes', [])
@@ -639,17 +705,15 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('P2', str(e))
 
-    async def _check_image_tags(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_image_tags(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if pods are using latest or mutable image tags."""
         try:
-            if namespace:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
-            else:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1')
+            # Use shared pods (optimization)
+            pods = shared_data.get('pods', [])
             
             mutable_tag_pods = []
             
-            for pod in pods.items:
+            for pod in pods:
                 pod_name = pod.metadata.name
                 pod_namespace = pod.metadata.namespace
                 containers = pod.spec.get('containers', [])
@@ -677,17 +741,15 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('P3', str(e))
 
-    async def _check_privilege_escalation(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_privilege_escalation(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check for privilege escalation in pods."""
         try:
-            if namespace:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
-            else:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1')
+            # Use shared pods (optimization)
+            pods = shared_data.get('pods', [])
             
             privilege_escalation_pods = []
             
-            for pod in pods.items:
+            for pod in pods:
                 pod_name = pod.metadata.name
                 pod_namespace = pod.metadata.namespace
                 containers = pod.spec.get('containers', [])
@@ -718,17 +780,15 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('P4', str(e))
 
-    async def _check_readonly_filesystem(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_readonly_filesystem(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if pods have read-only root filesystem."""
         try:
-            if namespace:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
-            else:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1')
+            # Use shared pods (optimization)
+            pods = shared_data.get('pods', [])
             
             writable_fs_pods = []
             
-            for pod in pods.items:
+            for pod in pods:
                 pod_name = pod.metadata.name
                 pod_namespace = pod.metadata.namespace
                 containers = pod.spec.get('containers', [])
@@ -759,17 +819,15 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('P5', str(e))
 
-    async def _check_serviceaccount_token_mount(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_serviceaccount_token_mount(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if ServiceAccount token mounting is disabled for pods."""
         try:
-            if namespace:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
-            else:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1')
+            # Use shared pods (optimization)
+            pods = shared_data.get('pods', [])
             
             token_mount_pods = []
             
-            for pod in pods.items:
+            for pod in pods:
                 pod_name = pod.metadata.name
                 pod_namespace = pod.metadata.namespace
                 
@@ -795,9 +853,10 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('P6', str(e))
 
-    async def _check_network_policies(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_network_policies(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if Network Policies are used to restrict communication between namespaces."""
         try:
+            k8s_client = shared_data.get('k8s_client')
             if namespace:
                 network_policies = k8s_client.list_resources(kind='NetworkPolicy', api_version='networking.k8s.io/v1', namespace=namespace)
             else:
@@ -822,16 +881,18 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('M1', str(e))
 
-    async def _check_namespace_quotas(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_namespace_quotas(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if Resource Quotas are defined at the namespace level."""
         try:
+            k8s_client = shared_data.get('k8s_client')
             if namespace:
                 resource_quotas = k8s_client.list_resources(kind='ResourceQuota', api_version='v1', namespace=namespace)
                 namespaces_to_check = [namespace]
             else:
                 resource_quotas = k8s_client.list_resources(kind='ResourceQuota', api_version='v1')
-                namespaces = k8s_client.list_resources(kind='Namespace', api_version='v1')
-                namespaces_to_check = [ns.metadata.name for ns in namespaces.items if ns.metadata.name not in ['kube-system', 'kube-public', 'kube-node-lease']]
+                # Use shared namespaces (optimization)
+                namespaces = shared_data.get('namespaces', [])
+                namespaces_to_check = [ns.metadata.name for ns in namespaces if ns.metadata.name not in ['kube-system', 'kube-public', 'kube-node-lease']]
             
             namespaces_with_quotas = set()
             if resource_quotas and hasattr(resource_quotas, 'items'):
@@ -857,27 +918,24 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('M2', str(e))
 
-    async def _check_node_isolation(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_node_isolation(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if tenant workloads are isolated to specific nodes using taints/tolerations and node affinity."""
         try:
-            # Check for nodes with taints (indicating tenant isolation)
-            nodes = k8s_client.list_resources(kind='Node', api_version='v1')
+            # Use shared nodes (optimization)
+            nodes = shared_data.get('nodes', [])
             tainted_nodes = []
             
-            for node in nodes.items:
+            for node in nodes:
                 node_name = node.metadata.name
                 taints = node.spec.get('taints', [])
                 if taints:
                     tainted_nodes.append(node_name)
             
-            # Check for pods with tolerations or node affinity
-            if namespace:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1', namespace=namespace)
-            else:
-                pods = k8s_client.list_resources(kind='Pod', api_version='v1')
+            # Use shared pods (optimization)
+            pods = shared_data.get('pods', [])
             
             isolated_pods = []
-            for pod in pods.items:
+            for pod in pods:
                 pod_name = pod.metadata.name
                 pod_namespace = pod.metadata.namespace
                 
@@ -908,15 +966,11 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('M3', str(e))
 
-    async def _check_control_plane_logs(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_control_plane_logs(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if EKS Control Plane logs are enabled."""
         try:
-            import boto3
-            eks_client = boto3.client('eks')
-            
-            # Get cluster configuration
-            response = eks_client.describe_cluster(name=cluster_name)
-            cluster = response['cluster']
+            # Use shared cluster info (optimization)
+            cluster = shared_data.get('cluster_info', {})
             
             # Check logging configuration
             logging_config = cluster.get('logging', {})
@@ -961,10 +1015,11 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('D1', str(e))
 
-    async def _check_storage_encryption(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_storage_encryption(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if encryption is enabled in StorageClass."""
         try:
             # Get all StorageClasses
+            k8s_client = shared_data.get('k8s_client')
             storage_classes = k8s_client.list_resources(kind='StorageClass', api_version='storage.k8s.io/v1')
             
             non_encrypted_sc = []
@@ -1017,9 +1072,10 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('DE1', str(e))
 
-    async def _check_external_secrets(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_external_secrets(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if external secrets provider is used."""
         try:
+            k8s_client = shared_data.get('k8s_client')
             # Check for External Secrets Operator
             external_secrets_found = []
             
@@ -1085,19 +1141,17 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('DE2', str(e))
 
-    async def _check_private_subnets(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_private_subnets(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if worker nodes are deployed onto private subnets."""
         try:
-            import boto3
-            ec2_client = boto3.client('ec2')
-            eks_client = boto3.client('eks')
-            
-            # Get node groups
-            node_groups = eks_client.list_nodegroups(clusterName=cluster_name)
+            # Use shared clients and node groups (optimization)
+            ec2_client = shared_data.get('ec2_client')
+            eks_client = shared_data.get('eks_client')
+            node_groups_list = shared_data.get('nodegroups', [])
             public_nodegroups = []
             private_nodegroups = []
             
-            for ng_name in node_groups.get('nodegroups', []):
+            for ng_name in node_groups_list:
                 ng_details = eks_client.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng_name)
                 subnets = ng_details['nodegroup'].get('subnets', [])
                 
@@ -1141,19 +1195,16 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('IS1', str(e))
 
-    async def _check_container_optimized_os(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_container_optimized_os(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if nodes use container-optimized OS."""
         try:
-            import boto3
-            eks_client = boto3.client('eks')
-            ec2_client = boto3.client('ec2')
-            
-            # Get node groups
-            node_groups = eks_client.list_nodegroups(clusterName=cluster_name)
+            # Use shared clients and node groups (optimization)
+            eks_client = shared_data.get('eks_client')
+            node_groups_list = shared_data.get('nodegroups', [])
             optimized_nodegroups = []
             non_optimized_nodegroups = []
             
-            for ng_name in node_groups.get('nodegroups', []):
+            for ng_name in node_groups_list:
                 ng_details = eks_client.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng_name)
                 
                 # Check AMI type
@@ -1182,19 +1233,16 @@ class EKSSecurityHandler:
         except Exception as e:
             return self._create_check_error_result('IS2', str(e))
 
-    async def _check_worker_node_access(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_worker_node_access(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if worker nodes have minimal access (no SSH, use SSM)."""
         try:
-            import boto3
-            eks_client = boto3.client('eks')
-            ec2_client = boto3.client('ec2')
-            
-            # Get node groups
-            node_groups = eks_client.list_nodegroups(clusterName=cluster_name)
+            # Use shared clients and node groups (optimization)
+            eks_client = shared_data.get('eks_client')
+            node_groups_list = shared_data.get('nodegroups', [])
             ssh_enabled_nodegroups = []
             secure_nodegroups = []
             
-            for ng_name in node_groups.get('nodegroups', []):
+            for ng_name in node_groups_list:
                 ng_details = eks_client.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng_name)
                 
                 # Check if SSH key is configured

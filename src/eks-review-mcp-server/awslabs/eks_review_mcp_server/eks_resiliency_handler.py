@@ -145,6 +145,11 @@ class EKSResiliencyHandler:
                 logger.error(f'Failed to get K8s client for cluster {cluster_name}: {str(e)}')
                 return self._create_error_response(cluster_name, str(e))
 
+            # Initialize shared data once (optimization)
+            shared_data = await self._initialize_shared_data(k8s_client, cluster_name, namespace)
+            if not shared_data:
+                return self._create_error_response(cluster_name, "Failed to initialize shared data")
+
             # Run all checks
             check_results = []
             all_compliant = True
@@ -155,7 +160,7 @@ class EKSResiliencyHandler:
             for check_id in sorted(all_checks.keys()):
                 try:
                     logger.info(f'Running check {check_id}')
-                    result = await self._execute_check(check_id, k8s_client, cluster_name, namespace)
+                    result = await self._execute_check(check_id, shared_data, cluster_name, namespace)
                     check_results.append(result)
                     
                     if not result['compliant']:
@@ -186,8 +191,126 @@ class EKSResiliencyHandler:
             logger.error(f'Unexpected error in resiliency check: {str(e)}')
             return self._create_error_response(cluster_name, str(e))
 
-    async def _execute_check(self, check_id: str, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
-        """Execute a single check based on its ID."""
+    async def _initialize_shared_data(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Initialize shared data once to avoid redundant API calls (optimization)."""
+        try:
+            shared_data = {}
+            
+            # Prepare kwargs for filtering
+            kwargs = {}
+            if namespace:
+                kwargs['namespace'] = namespace
+            
+            # Fetch Pods ONCE (used by A1)
+            try:
+                pods = k8s_client.list_resources(kind='Pod', api_version='v1', **kwargs)
+                shared_data['pods'] = pods.items if hasattr(pods, 'items') else []
+                logger.info(f'Fetched {len(shared_data["pods"])} pods once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch pods: {str(e)}')
+                shared_data['pods'] = []
+            
+            # Fetch Deployments ONCE (used by A2, A3, A4, A5, A6)
+            try:
+                deployments = k8s_client.list_resources(kind='Deployment', api_version='apps/v1', **kwargs)
+                shared_data['deployments'] = deployments.items if hasattr(deployments, 'items') else []
+                logger.info(f'Fetched {len(shared_data["deployments"])} deployments once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch deployments: {str(e)}')
+                shared_data['deployments'] = []
+            
+            # Fetch StatefulSets ONCE (used by A2, A4, A5, A6)
+            try:
+                statefulsets = k8s_client.list_resources(kind='StatefulSet', api_version='apps/v1', **kwargs)
+                shared_data['statefulsets'] = statefulsets.items if hasattr(statefulsets, 'items') else []
+                logger.info(f'Fetched {len(shared_data["statefulsets"])} statefulsets once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch statefulsets: {str(e)}')
+                shared_data['statefulsets'] = []
+            
+            # Fetch DaemonSets ONCE (used by A4, A5)
+            try:
+                daemonsets = k8s_client.list_resources(kind='DaemonSet', api_version='apps/v1', **kwargs)
+                shared_data['daemonsets'] = daemonsets.items if hasattr(daemonsets, 'items') else []
+                logger.info(f'Fetched {len(shared_data["daemonsets"])} daemonsets once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch daemonsets: {str(e)}')
+                shared_data['daemonsets'] = []
+            
+            # Fetch PodDisruptionBudgets ONCE (used by A6)
+            try:
+                pdbs = k8s_client.list_resources(kind='PodDisruptionBudget', api_version='policy/v1', **kwargs)
+                shared_data['pdbs'] = pdbs.items if hasattr(pdbs, 'items') else []
+                logger.info(f'Fetched {len(shared_data["pdbs"])} PodDisruptionBudgets once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch PodDisruptionBudgets: {str(e)}')
+                shared_data['pdbs'] = []
+            
+            # Fetch HorizontalPodAutoscalers ONCE (used by A8)
+            try:
+                hpas = k8s_client.list_resources(kind='HorizontalPodAutoscaler', api_version='autoscaling/v2', **kwargs)
+                shared_data['hpas'] = hpas.items if hasattr(hpas, 'items') else []
+                logger.info(f'Fetched {len(shared_data["hpas"])} HorizontalPodAutoscalers once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch HorizontalPodAutoscalers: {str(e)}')
+                shared_data['hpas'] = []
+            
+            # Fetch kube-system Deployments ONCE (used by A7, A10, A12, A13, A14, C2, D1)
+            try:
+                kube_system_deployments = k8s_client.list_resources(kind='Deployment', api_version='apps/v1', namespace='kube-system')
+                shared_data['kube_system_deployments'] = kube_system_deployments.items if hasattr(kube_system_deployments, 'items') else []
+                logger.info(f'Fetched {len(shared_data["kube_system_deployments"])} kube-system deployments once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch kube-system deployments: {str(e)}')
+                shared_data['kube_system_deployments'] = []
+            
+            # Fetch kube-system DaemonSets ONCE (used by A13, A14, C3)
+            try:
+                kube_system_daemonsets = k8s_client.list_resources(kind='DaemonSet', api_version='apps/v1', namespace='kube-system')
+                shared_data['kube_system_daemonsets'] = kube_system_daemonsets.items if hasattr(kube_system_daemonsets, 'items') else []
+                logger.info(f'Fetched {len(shared_data["kube_system_daemonsets"])} kube-system daemonsets once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch kube-system daemonsets: {str(e)}')
+                shared_data['kube_system_daemonsets'] = []
+            
+            # Fetch kube-system ConfigMaps ONCE (used by C2, C3)
+            try:
+                kube_system_configmaps = k8s_client.list_resources(kind='ConfigMap', api_version='v1', namespace='kube-system')
+                shared_data['kube_system_configmaps'] = kube_system_configmaps.items if hasattr(kube_system_configmaps, 'items') else []
+                logger.info(f'Fetched {len(shared_data["kube_system_configmaps"])} kube-system configmaps once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch kube-system configmaps: {str(e)}')
+                shared_data['kube_system_configmaps'] = []
+            
+            # Initialize AWS EKS client ONCE (used by C1, C2, C4)
+            try:
+                eks_client = AwsHelper.create_boto3_client('eks')
+                shared_data['eks_client'] = eks_client
+                
+                # Fetch cluster info ONCE (used by C1, C4)
+                cluster_info = eks_client.describe_cluster(name=cluster_name)
+                shared_data['cluster_info'] = cluster_info['cluster']
+                logger.info('Fetched cluster info once for sharing')
+            except Exception as e:
+                logger.warning(f'Failed to fetch cluster info: {str(e)}')
+                shared_data['eks_client'] = None
+                shared_data['cluster_info'] = {}
+            
+            # Store k8s_client and other context for checks that need it
+            shared_data['k8s_client'] = k8s_client
+            shared_data['cluster_name'] = cluster_name
+            shared_data['namespace'] = namespace
+            
+            return shared_data
+            
+        except Exception as e:
+            logger.error(f'Failed to initialize shared data: {str(e)}')
+            import traceback
+            logger.error(f'Traceback: {traceback.format_exc()}')
+            return None
+
+    async def _execute_check(self, check_id: str, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+        """Execute a single check based on its ID using shared data."""
         
         # Map check IDs to their corresponding methods
         check_methods = {
@@ -223,18 +346,18 @@ class EKSResiliencyHandler:
         if not check_method:
             return self._create_check_error_result(check_id, f"No implementation found for check {check_id}")
         
-        # Execute the check method
+        # Execute the check method with shared data
         if check_id.startswith('A'):
-            # Application checks only need k8s_client and namespace
-            return check_method(k8s_client, namespace)
+            # Application checks use shared data and namespace
+            return check_method(shared_data, namespace)
         else:
             # Control plane and data plane checks need cluster_name too
-            return check_method(k8s_client, cluster_name, namespace)
+            return check_method(shared_data, cluster_name, namespace)
 
     # Placeholder check methods - these would contain the actual check logic
     # For now, I'll create simple placeholder implementations that use the JSON configuration
     
-    def _check_singleton_pods(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_singleton_pods(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A1: Singleton pods without controller management."""
         singleton_pods = []
         try:
@@ -242,24 +365,12 @@ class EKSResiliencyHandler:
                 f'Starting singleton pods check, namespace: {namespace if namespace else "all"}'
             )
 
-            # Prepare kwargs for filtering
-            kwargs = {}
-            if namespace:
-                kwargs['namespace'] = namespace
-                logger.info(f'Checking pods in namespace: {namespace}')
-            else:
-                logger.info('Checking pods across all namespaces')
+            # Use shared pods (optimization)
+            pods = shared_data.get('pods', [])
+            logger.info(f'Using {len(pods)} shared pods')
 
-            # Use the K8sApis list_resources method
-            logger.info('Calling list_resources to get pods')
-            pods_response = k8s_client.list_resources(kind='Pod', api_version='v1', **kwargs)
-
-            # Log the number of pods found
-            pod_count = len(pods_response.items) if hasattr(pods_response, 'items') else 0
-            logger.info(f'Retrieved {pod_count} pods')
-
-            # Process the response
-            for pod in pods_response.items:
+            # Process the pods
+            for pod in pods:
                 try:
                     pod_dict = pod.to_dict() if hasattr(pod, 'to_dict') else pod
 
@@ -297,7 +408,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking singleton pods {scope_info}: {str(e)}'
             return self._create_check_result('A1', False, [], error_message)
 
-    def _check_multiple_replicas(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_multiple_replicas(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A2: Deployments and StatefulSets with only one replica."""
         single_replica_workloads = []
         try:
@@ -305,28 +416,12 @@ class EKSResiliencyHandler:
                 f'Starting multiple replicas check, namespace: {namespace if namespace else "all"}'
             )
 
-            # Prepare kwargs for filtering
-            kwargs = {}
-            if namespace:
-                kwargs['namespace'] = namespace
-                logger.info(f'Checking workloads in namespace: {namespace}')
-            else:
-                logger.info('Checking workloads across all namespaces')
-
-            # Check Deployments
-            logger.info('Calling list_resources to get deployments')
-            deployments_response = k8s_client.list_resources(
-                kind='Deployment', api_version='apps/v1', **kwargs
-            )
-
-            # Log the number of deployments found
-            deployment_count = (
-                len(deployments_response.items) if hasattr(deployments_response, 'items') else 0
-            )
-            logger.info(f'Retrieved {deployment_count} deployments')
+            # Use shared deployments (optimization)
+            deployments = shared_data.get('deployments', [])
+            logger.info(f'Using {len(deployments)} shared deployments')
 
             # Process deployments
-            for deployment in deployments_response.items:
+            for deployment in deployments:
                 try:
                     deployment_dict = (
                         deployment.to_dict() if hasattr(deployment, 'to_dict') else deployment
@@ -351,23 +446,13 @@ class EKSResiliencyHandler:
                 except Exception as deploy_error:
                     logger.error(f'Error processing deployment: {str(deploy_error)}')
 
-            # Check StatefulSets
-            logger.info('Calling list_resources to get statefulsets')
+            # Use shared statefulsets (optimization)
+            statefulsets = shared_data.get('statefulsets', [])
+            logger.info(f'Using {len(statefulsets)} shared statefulsets')
+            
             try:
-                statefulsets_response = k8s_client.list_resources(
-                    kind='StatefulSet', api_version='apps/v1', **kwargs
-                )
-
-                # Log the number of statefulsets found
-                statefulset_count = (
-                    len(statefulsets_response.items)
-                    if hasattr(statefulsets_response, 'items')
-                    else 0
-                )
-                logger.info(f'Retrieved {statefulset_count} statefulsets')
-
                 # Process statefulsets
-                for statefulset in statefulsets_response.items:
+                for statefulset in statefulsets:
                     try:
                         statefulset_dict = (
                             statefulset.to_dict()
@@ -412,7 +497,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking workloads for multiple replicas {scope_info}: {str(e)}'
             return self._create_check_result('A2', False, [], error_message)
 
-    def _check_pod_anti_affinity(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_pod_anti_affinity(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A3: Multi-replica deployments without pod anti-affinity."""
         deployments_without_anti_affinity = []
         try:
@@ -420,28 +505,12 @@ class EKSResiliencyHandler:
                 f'Starting pod anti-affinity check, namespace: {namespace if namespace else "all"}'
             )
 
-            # Prepare kwargs for filtering
-            kwargs = {}
-            if namespace:
-                kwargs['namespace'] = namespace
-                logger.info(f'Checking deployments in namespace: {namespace}')
-            else:
-                logger.info('Checking deployments across all namespaces')
+            # Use shared deployments (optimization)
+            deployments = shared_data.get('deployments', [])
+            logger.info(f'Using {len(deployments)} shared deployments')
 
-            # Use the K8sApis list_resources method to get deployments
-            logger.info('Calling list_resources to get deployments')
-            deployments_response = k8s_client.list_resources(
-                kind='Deployment', api_version='apps/v1', **kwargs
-            )
-
-            # Log the number of deployments found
-            deployment_count = (
-                len(deployments_response.items) if hasattr(deployments_response, 'items') else 0
-            )
-            logger.info(f'Retrieved {deployment_count} deployments')
-
-            # Process the response
-            for deployment in deployments_response.items:
+            # Process the deployments
+            for deployment in deployments:
                 try:
                     deployment_dict = (
                         deployment.to_dict() if hasattr(deployment, 'to_dict') else deployment
@@ -496,7 +565,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking deployments for pod anti-affinity {scope_info}: {str(e)}'
             return self._create_check_result('A3', False, [], error_message)
 
-    def _check_liveness_probe(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_liveness_probe(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A4: Deployments without liveness probes."""
         workloads_without_liveness = []
         try:
@@ -504,23 +573,13 @@ class EKSResiliencyHandler:
                 f'Starting liveness probe check, namespace: {namespace if namespace else "all"}'
             )
 
-            # Prepare kwargs for filtering
-            kwargs = {}
-            if namespace:
-                kwargs['namespace'] = namespace
-                logger.info(f'Checking workloads in namespace: {namespace}')
-            else:
-                logger.info('Checking workloads across all namespaces')
-
-            # Check Deployments
-            logger.info('Checking Deployments for liveness probes')
+            # Use shared deployments (optimization)
+            deployments = shared_data.get('deployments', [])
+            logger.info(f'Checking {len(deployments)} shared deployments for liveness probes')
+            
             try:
-                deployments_response = k8s_client.list_resources(
-                    kind='Deployment', api_version='apps/v1', **kwargs
-                )
-
-                # Process the response
-                for deployment in deployments_response.items:
+                # Process the deployments
+                for deployment in deployments:
                     try:
                         deployment_dict = (
                             deployment.to_dict() if hasattr(deployment, 'to_dict') else deployment
@@ -550,14 +609,12 @@ class EKSResiliencyHandler:
             except Exception as e:
                 logger.error(f'Error listing deployments: {str(e)}')
 
-            # Check StatefulSets
-            logger.info('Checking StatefulSets for liveness probes')
+            # Use shared statefulsets (optimization)
+            statefulsets = shared_data.get('statefulsets', [])
+            logger.info(f'Checking {len(statefulsets)} shared statefulsets for liveness probes')
+            
             try:
-                statefulsets_response = k8s_client.list_resources(
-                    kind='StatefulSet', api_version='apps/v1', **kwargs
-                )
-
-                for statefulset in statefulsets_response.items:
+                for statefulset in statefulsets:
                     try:
                         statefulset_dict = (
                             statefulset.to_dict()
@@ -589,14 +646,12 @@ class EKSResiliencyHandler:
             except Exception as e:
                 logger.error(f'Error listing statefulsets: {str(e)}')
 
-            # Check DaemonSets
-            logger.info('Checking DaemonSets for liveness probes')
+            # Use shared daemonsets (optimization)
+            daemonsets = shared_data.get('daemonsets', [])
+            logger.info(f'Checking {len(daemonsets)} shared daemonsets for liveness probes')
+            
             try:
-                daemonsets_response = k8s_client.list_resources(
-                    kind='DaemonSet', api_version='apps/v1', **kwargs
-                )
-
-                for daemonset in daemonsets_response.items:
+                for daemonset in daemonsets:
                     try:
                         daemonset_dict = (
                             daemonset.to_dict() if hasattr(daemonset, 'to_dict') else daemonset
@@ -640,7 +695,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking workloads for liveness probes {scope_info}: {str(e)}'
             return self._create_check_result('A4', False, [], error_message)
 
-    def _check_readiness_probe(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_readiness_probe(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A5: Deployments without readiness probes."""
         workloads_without_readiness = []
         try:
@@ -648,21 +703,19 @@ class EKSResiliencyHandler:
                 f'Starting readiness probe check, namespace: {namespace if namespace else "all"}'
             )
 
-            # Prepare kwargs for filtering
-            kwargs = {}
-            if namespace:
-                kwargs['namespace'] = namespace
-            else:
-                logger.info('Checking workloads across all namespaces')
-
+            # Use shared workloads (optimization)
+            workload_types = {
+                'Deployment': shared_data.get('deployments', []),
+                'StatefulSet': shared_data.get('statefulsets', []),
+                'DaemonSet': shared_data.get('daemonsets', [])
+            }
+            
             # Check Deployments, StatefulSets, and DaemonSets
-            for workload_type in ['Deployment', 'StatefulSet', 'DaemonSet']:
+            for workload_type, workloads in workload_types.items():
                 try:
-                    workloads_response = k8s_client.list_resources(
-                        kind=workload_type, api_version='apps/v1', **kwargs
-                    )
-
-                    for workload in workloads_response.items:
+                    logger.info(f'Checking {len(workloads)} shared {workload_type}s for readiness probes')
+                    
+                    for workload in workloads:
                         try:
                             workload_dict = (
                                 workload.to_dict() if hasattr(workload, 'to_dict') else workload
@@ -706,7 +759,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking workloads for readiness probes {scope_info}: {str(e)}'
             return self._create_check_result('A5', False, [], error_message)
 
-    def _check_pod_disruption_budget(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_pod_disruption_budget(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A6: Critical workloads without Pod Disruption Budgets."""
         workloads_without_pdb = []
         try:
@@ -714,18 +767,12 @@ class EKSResiliencyHandler:
                 f'Starting pod disruption budget check, namespace: {namespace if namespace else "all"}'
             )
 
-            # Prepare kwargs for filtering
-            kwargs = {}
-            if namespace:
-                kwargs['namespace'] = namespace
-
-            # Get all PDBs first
-            pdbs_response = k8s_client.list_resources(
-                kind='PodDisruptionBudget', api_version='policy/v1', **kwargs
-            )
+            # Use shared PDBs (optimization)
+            pdbs = shared_data.get('pdbs', [])
+            logger.info(f'Using {len(pdbs)} shared PodDisruptionBudgets')
             
             pdb_selectors = []
-            for pdb in pdbs_response.items:
+            for pdb in pdbs:
                 try:
                     pdb_dict = pdb.to_dict() if hasattr(pdb, 'to_dict') else pdb
                     spec = pdb_dict.get('spec', {})
@@ -735,14 +782,18 @@ class EKSResiliencyHandler:
                 except Exception as e:
                     logger.error(f'Error processing PDB: {str(e)}')
 
+            # Use shared workloads (optimization)
+            workload_types = {
+                'Deployment': shared_data.get('deployments', []),
+                'StatefulSet': shared_data.get('statefulsets', [])
+            }
+            
             # Check critical workloads (multi-replica Deployments and all StatefulSets)
-            for workload_type in ['Deployment', 'StatefulSet']:
+            for workload_type, workloads in workload_types.items():
                 try:
-                    workloads_response = k8s_client.list_resources(
-                        kind=workload_type, api_version='apps/v1', **kwargs
-                    )
-
-                    for workload in workloads_response.items:
+                    logger.info(f'Checking {len(workloads)} shared {workload_type}s for PDBs')
+                    
+                    for workload in workloads:
                         try:
                             workload_dict = (
                                 workload.to_dict() if hasattr(workload, 'to_dict') else workload
@@ -789,7 +840,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking pod disruption budgets {scope_info}: {str(e)}'
             return self._create_check_result('A6', False, [], error_message)
 
-    def _check_metrics_server(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_metrics_server(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A7: Kubernetes Metrics Server."""
         try:
             logger.info('Starting metrics server check')
@@ -808,14 +859,13 @@ class EKSResiliencyHandler:
                 logger.info(f'Metrics API not available: {str(e)}')
                 metrics_api_available = False
 
-            # Check for metrics-server deployment
+            # Use shared kube-system deployments (optimization)
+            kube_system_deployments = shared_data.get('kube_system_deployments', [])
+            logger.info(f'Using {len(kube_system_deployments)} shared kube-system deployments')
+            
             try:
-                deployments_response = k8s_client.list_resources(
-                    kind='Deployment', api_version='apps/v1', namespace='kube-system'
-                )
-                
                 metrics_server_found = False
-                for deployment in deployments_response.items:
+                for deployment in kube_system_deployments:
                     deployment_dict = deployment.to_dict() if hasattr(deployment, 'to_dict') else deployment
                     metadata = deployment_dict.get('metadata', {})
                     name = metadata.get('name', '')
@@ -842,7 +892,7 @@ class EKSResiliencyHandler:
             error_message = f'Error checking metrics server: {str(e)}'
             return self._create_check_result('A7', False, [], error_message)
 
-    def _check_horizontal_pod_autoscaler(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_horizontal_pod_autoscaler(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A8: Horizontal Pod Autoscaler (HPA)."""
         workloads_without_hpa = []
         try:
@@ -850,18 +900,13 @@ class EKSResiliencyHandler:
                 f'Starting HPA check, namespace: {namespace if namespace else "all"}'
             )
 
-            # Prepare kwargs for filtering
-            kwargs = {}
-            if namespace:
-                kwargs['namespace'] = namespace
-
-            # Get all HPAs first
+            # Use shared HPAs (optimization)
+            hpas = shared_data.get('hpas', [])
+            logger.info(f'Using {len(hpas)} shared HPAs')
+            
             try:
-                hpas_response = k8s_client.list_resources(
-                    kind='HorizontalPodAutoscaler', api_version='autoscaling/v2', **kwargs
-                )
                 hpa_targets = set()
-                for hpa in hpas_response.items:
+                for hpa in hpas:
                     try:
                         hpa_dict = hpa.to_dict() if hasattr(hpa, 'to_dict') else hpa
                         spec = hpa_dict.get('spec', {})
@@ -876,14 +921,18 @@ class EKSResiliencyHandler:
                 logger.info(f'No HPAs found or error accessing HPAs: {str(e)}')
                 hpa_targets = set()
 
+            # Use shared workloads (optimization)
+            workload_types = {
+                'Deployment': shared_data.get('deployments', []),
+                'StatefulSet': shared_data.get('statefulsets', [])
+            }
+            
             # Check multi-replica Deployments and StatefulSets
-            for workload_type in ['Deployment', 'StatefulSet']:
+            for workload_type, workloads in workload_types.items():
                 try:
-                    workloads_response = k8s_client.list_resources(
-                        kind=workload_type, api_version='apps/v1', **kwargs
-                    )
-
-                    for workload in workloads_response.items:
+                    logger.info(f'Checking {len(workloads)} shared {workload_type}s for HPA')
+                    
+                    for workload in workloads:
                         try:
                             workload_dict = (
                                 workload.to_dict() if hasattr(workload, 'to_dict') else workload
@@ -926,7 +975,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking HPA {scope_info}: {str(e)}'
             return self._create_check_result('A8', False, [], error_message)
 
-    def _check_custom_metrics(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_custom_metrics(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A9: Custom metrics scaling."""
         try:
             logger.info('Starting custom metrics check')
@@ -976,7 +1025,7 @@ class EKSResiliencyHandler:
             error_message = f'Error checking custom metrics: {str(e)}'
             return self._create_check_result('A9', False, [], error_message)
 
-    def _check_vertical_pod_autoscaler(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_vertical_pod_autoscaler(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A10: Vertical Pod Autoscaler (VPA)."""
         try:
             logger.info('Starting VPA check')
@@ -995,14 +1044,13 @@ class EKSResiliencyHandler:
             except Exception:
                 pass
 
+            # Use shared kube-system deployments (optimization)
+            kube_system_deployments = shared_data.get('kube_system_deployments', [])
+            
             # Check for VPA controller components
             vpa_components_found = []
             try:
-                deployments_response = k8s_client.list_resources(
-                    kind='Deployment', api_version='apps/v1', namespace='kube-system'
-                )
-                
-                for deployment in deployments_response.items:
+                for deployment in kube_system_deployments:
                     deployment_dict = deployment.to_dict() if hasattr(deployment, 'to_dict') else deployment
                     metadata = deployment_dict.get('metadata', {})
                     name = metadata.get('name', '')
@@ -1027,7 +1075,7 @@ class EKSResiliencyHandler:
             error_message = f'Error checking VPA: {str(e)}'
             return self._create_check_result('A10', False, [], error_message)
 
-    def _check_prestop_hooks(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_prestop_hooks(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A11: PreStop hooks for graceful termination."""
         workloads_without_prestop = []
         try:
@@ -1035,19 +1083,18 @@ class EKSResiliencyHandler:
                 f'Starting preStop hooks check, namespace: {namespace if namespace else "all"}'
             )
 
-            # Prepare kwargs for filtering
-            kwargs = {}
-            if namespace:
-                kwargs['namespace'] = namespace
-
+            # Use shared workloads (optimization)
+            workload_types = {
+                'Deployment': shared_data.get('deployments', []),
+                'StatefulSet': shared_data.get('statefulsets', [])
+            }
+            
             # Check Deployments and StatefulSets (exclude DaemonSets as they're system services)
-            for workload_type in ['Deployment', 'StatefulSet']:
+            for workload_type, workloads in workload_types.items():
                 try:
-                    workloads_response = k8s_client.list_resources(
-                        kind=workload_type, api_version='apps/v1', **kwargs
-                    )
-
-                    for workload in workloads_response.items:
+                    logger.info(f'Checking {len(workloads)} shared {workload_type}s for preStop hooks')
+                    
+                    for workload in workloads:
                         try:
                             workload_dict = (
                                 workload.to_dict() if hasattr(workload, 'to_dict') else workload
@@ -1091,7 +1138,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking preStop hooks {scope_info}: {str(e)}'
             return self._create_check_result('A11', False, [], error_message)
 
-    def _check_service_mesh(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_service_mesh(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A12: Service mesh usage."""
         try:
             logger.info('Starting service mesh check')
@@ -1124,13 +1171,12 @@ class EKSResiliencyHandler:
             except Exception:
                 pass
 
+            # Use shared deployments (optimization)
+            deployments = shared_data.get('deployments', [])
+            
             # Check for Consul Connect
             try:
-                deployments_response = k8s_client.list_resources(
-                    kind='Deployment', api_version='apps/v1'
-                )
-                
-                for deployment in deployments_response.items:
+                for deployment in deployments:
                     deployment_dict = deployment.to_dict() if hasattr(deployment, 'to_dict') else deployment
                     metadata = deployment_dict.get('metadata', {})
                     name = metadata.get('name', '')
@@ -1156,12 +1202,13 @@ class EKSResiliencyHandler:
             error_message = f'Error checking service mesh: {str(e)}'
             return self._create_check_result('A12', False, [], error_message)
 
-    def _check_monitoring(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_monitoring(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A13: Application monitoring."""
         try:
             logger.info('Starting monitoring check')
 
             monitoring_found = []
+            k8s_client = shared_data.get('k8s_client')
             
             # Check for Prometheus
             try:
@@ -1192,13 +1239,12 @@ class EKSResiliencyHandler:
             except Exception:
                 pass
 
+            # Use shared deployments (optimization)
+            deployments = shared_data.get('deployments', [])
+            
             # Check for other monitoring solutions
             try:
-                deployments_response = k8s_client.list_resources(
-                    kind='Deployment', api_version='apps/v1'
-                )
-                
-                for deployment in deployments_response.items:
+                for deployment in deployments:
                     deployment_dict = deployment.to_dict() if hasattr(deployment, 'to_dict') else deployment
                     metadata = deployment_dict.get('metadata', {})
                     name = metadata.get('name', '')
@@ -1223,7 +1269,7 @@ class EKSResiliencyHandler:
             error_message = f'Error checking monitoring: {str(e)}'
             return self._create_check_result('A13', False, [], error_message)
 
-    def _check_centralized_logging(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_centralized_logging(self, shared_data: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A14: Centralized logging."""
         try:
             logger.info('Starting centralized logging check')
@@ -1243,13 +1289,12 @@ class EKSResiliencyHandler:
             except Exception:
                 pass
 
+            # Use shared daemonsets (optimization)
+            daemonsets = shared_data.get('daemonsets', [])
+            
             # Check for Fluentd/Fluent Bit
             try:
-                daemonsets_response = k8s_client.list_resources(
-                    kind='DaemonSet', api_version='apps/v1'
-                )
-                
-                for ds in daemonsets_response.items:
+                for ds in daemonsets:
                     ds_dict = ds.to_dict() if hasattr(ds, 'to_dict') else ds
                     metadata = ds_dict.get('metadata', {})
                     name = metadata.get('name', '')
@@ -1258,13 +1303,12 @@ class EKSResiliencyHandler:
             except Exception:
                 pass
 
+            # Use shared deployments (optimization)
+            deployments = shared_data.get('deployments', [])
+            
             # Check for Loki
             try:
-                deployments_response = k8s_client.list_resources(
-                    kind='Deployment', api_version='apps/v1'
-                )
-                
-                for deployment in deployments_response.items:
+                for deployment in deployments:
                     deployment_dict = deployment.to_dict() if hasattr(deployment, 'to_dict') else deployment
                     metadata = deployment_dict.get('metadata', {})
                     name = metadata.get('name', '')
@@ -1289,17 +1333,13 @@ class EKSResiliencyHandler:
             logger.error(f'Error checking centralized logging: {str(e)}')
             error_message = f'Error checking centralized logging: {str(e)}'
             return self._create_check_result('A14', False, [], error_message)    
-    def _check_c1(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_c1(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check C1: Monitor Control Plane Logs."""
         try:
             logger.info(f'Starting control plane logs check for cluster: {cluster_name}')
 
-            # Create EKS client using AwsHelper
-            eks_client = AwsHelper.create_boto3_client('eks')
-
-            # Get cluster info
-            cluster_info = eks_client.describe_cluster(name=cluster_name)
-            cluster_data = cluster_info['cluster']
+            # Use shared cluster info (optimization)
+            cluster_data = shared_data.get('cluster_info', {})
             
             # Check logging configuration
             logging_config = cluster_data.get('logging', {})
@@ -1326,31 +1366,31 @@ class EKSResiliencyHandler:
             error_message = f'Error checking control plane logs: {str(e)}'
             return self._create_check_result('C1', False, [], error_message)
 
-    def _check_c2(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_c2(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check C2: Cluster Authentication."""
         try:
             logger.info(f'Starting cluster authentication check for cluster: {cluster_name}')
 
-            # Create EKS client using AwsHelper
-            eks_client = AwsHelper.create_boto3_client('eks')
+            # Use shared EKS client (optimization)
+            eks_client = shared_data.get('eks_client')
 
             auth_methods_found = []
             
             # Check for EKS Access Entries (modern method)
-            try:
-                access_entries = eks_client.list_access_entries(clusterName=cluster_name)
-                if access_entries.get('accessEntries'):
-                    auth_methods_found.append('EKS Access Entries')
-            except Exception as e:
-                logger.info(f'No EKS Access Entries found: {str(e)}')
+            if eks_client:
+                try:
+                    access_entries = eks_client.list_access_entries(clusterName=cluster_name)
+                    if access_entries.get('accessEntries'):
+                        auth_methods_found.append('EKS Access Entries')
+                except Exception as e:
+                    logger.info(f'No EKS Access Entries found: {str(e)}')
 
+            # Use shared kube-system configmaps (optimization)
+            kube_system_configmaps = shared_data.get('kube_system_configmaps', [])
+            
             # Check for aws-auth ConfigMap (legacy method)
             try:
-                configmaps_response = k8s_client.list_resources(
-                    kind='ConfigMap', api_version='v1', namespace='kube-system'
-                )
-                
-                for cm in configmaps_response.items:
+                for cm in kube_system_configmaps:
                     cm_dict = cm.to_dict() if hasattr(cm, 'to_dict') else cm
                     metadata = cm_dict.get('metadata', {})
                     name = metadata.get('name', '')
@@ -1376,11 +1416,12 @@ class EKSResiliencyHandler:
             error_message = f'Error checking cluster authentication: {str(e)}'
             return self._create_check_result('C2', False, [], error_message)
 
-    def _check_c3(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_c3(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check C3: Running large clusters."""
         try:
             logger.info(f'Starting large clusters check for cluster: {cluster_name}')
 
+            k8s_client = shared_data.get('k8s_client')
             # Count total services in the cluster
             services_response = k8s_client.list_resources(kind='Service', api_version='v1')
             service_count = len(services_response.items) if hasattr(services_response, 'items') else 0
@@ -1393,14 +1434,13 @@ class EKSResiliencyHandler:
             # For large clusters, check optimizations
             optimizations_missing = []
             
+            # Use shared kube-system configmaps (optimization)
+            kube_system_configmaps = shared_data.get('kube_system_configmaps', [])
+            
             # Check kube-proxy mode
             try:
-                configmaps_response = k8s_client.list_resources(
-                    kind='ConfigMap', api_version='v1', namespace='kube-system'
-                )
-                
                 ipvs_mode_enabled = False
-                for cm in configmaps_response.items:
+                for cm in kube_system_configmaps:
                     cm_dict = cm.to_dict() if hasattr(cm, 'to_dict') else cm
                     metadata = cm_dict.get('metadata', {})
                     name = metadata.get('name', '')
@@ -1416,14 +1456,13 @@ class EKSResiliencyHandler:
             except Exception as e:
                 logger.error(f'Error checking kube-proxy mode: {str(e)}')
 
+            # Use shared kube-system daemonsets (optimization)
+            kube_system_daemonsets = shared_data.get('kube_system_daemonsets', [])
+            
             # Check AWS VPC CNI IP caching
             try:
-                daemonsets_response = k8s_client.list_resources(
-                    kind='DaemonSet', api_version='apps/v1', namespace='kube-system'
-                )
-                
                 ip_caching_configured = False
-                for ds in daemonsets_response.items:
+                for ds in kube_system_daemonsets:
                     ds_dict = ds.to_dict() if hasattr(ds, 'to_dict') else ds
                     metadata = ds_dict.get('metadata', {})
                     name = metadata.get('name', '')
@@ -1462,17 +1501,13 @@ class EKSResiliencyHandler:
             error_message = f'Error checking large clusters: {str(e)}'
             return self._create_check_result('C3', False, [], error_message)
 
-    def _check_c4(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_c4(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check C4: EKS Control Plane Endpoint Access Control."""
         try:
             logger.info(f'Starting endpoint access control check for cluster: {cluster_name}')
 
-            # Create EKS client using AwsHelper
-            eks_client = AwsHelper.create_boto3_client('eks')
-
-            # Get cluster info
-            cluster_info = eks_client.describe_cluster(name=cluster_name)
-            cluster_data = cluster_info['cluster']
+            # Use shared cluster info (optimization)
+            cluster_data = shared_data.get('cluster_info', {})
             
             # Check endpoint configuration
             resources_vpc_config = cluster_data.get('resourcesVpcConfig', {})
@@ -1501,11 +1536,12 @@ class EKSResiliencyHandler:
             error_message = f'Error checking endpoint access control: {str(e)}'
             return self._create_check_result('C4', False, [], error_message)
 
-    def _check_c5(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_c5(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check C5: Avoid catch-all admission webhooks."""
         try:
             logger.info('Starting admission webhooks check')
 
+            k8s_client = shared_data.get('k8s_client')
             catch_all_webhooks = []
             
             # Check MutatingAdmissionWebhooks
@@ -1573,20 +1609,19 @@ class EKSResiliencyHandler:
             logger.error(f'Error checking admission webhooks: {str(e)}')
             error_message = f'Error checking admission webhooks: {str(e)}'
             return self._create_check_result('C5', False, [], error_message)   
-    def _check_d1(self, k8s_api, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_d1(self, shared_data: Dict[str, Any], cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check D1: Use Kubernetes Cluster Autoscaler or Karpenter."""
         try:
             logger.info('Starting node autoscaling check')
 
             autoscaling_solutions = []
             
+            # Use shared kube-system deployments (optimization)
+            kube_system_deployments = shared_data.get('kube_system_deployments', [])
+            
             # Check for Cluster Autoscaler
             try:
-                deployments_response = k8s_client.list_resources(
-                    kind='Deployment', api_version='apps/v1', namespace='kube-system'
-                )
-                
-                for deployment in deployments_response.items:
+                for deployment in kube_system_deployments:
                     deployment_dict = deployment.to_dict() if hasattr(deployment, 'to_dict') else deployment
                     metadata = deployment_dict.get('metadata', {})
                     name = metadata.get('name', '')
