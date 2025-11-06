@@ -17,6 +17,7 @@
 from awslabs.eks_review_mcp_server.eks_resiliency_handler import EKSResiliencyHandler
 from awslabs.eks_review_mcp_server.eks_security_handler import EKSSecurityHandler
 from awslabs.eks_review_mcp_server.eks_karpenter_handler import EKSKarpenterHandler
+from awslabs.eks_review_mcp_server.eks_cluster_autoscaler_handler import EKSClusterAutoscalerHandler
 from awslabs.eks_review_mcp_server.eks_networking_handler import EKSNetworkingHandler
 from awslabs.eks_review_mcp_server.k8s_client_cache import K8sClientCache
 from loguru import logger
@@ -49,14 +50,18 @@ Analyzes application and infrastructure resilience including pod controllers, re
 ### check_karpenter_best_practices
 Reviews Karpenter deployment and configuration including version management, AMI pinning, instance type selection, NodePool configuration, TTL settings, spot instance optimization, resource limits, and disruption budgets.
 
+### check_cluster_autoscaler_best_practices
+Evaluates Cluster Autoscaler deployment and configuration including version compatibility, auto-discovery settings, IAM permissions, node group configuration, cost optimization (spot instances, expander strategy), performance settings, and availability configurations.
+
 ## Usage Guidelines
 
 ### When to Run All Checks
-If the user requests a general EKS best practices review or cluster assessment without specifying a domain, **run all four tools**:
+If the user requests a general EKS best practices review or cluster assessment without specifying a domain, **run all five tools**:
 1. check_eks_networking
 2. check_eks_security
 3. check_eks_resiliency
 4. check_karpenter_best_practices
+5. check_cluster_autoscaler_best_practices
 
 ### When to Run Specific Checks
 If the user explicitly requests a specific domain, run only the relevant tool(s):
@@ -64,6 +69,7 @@ If the user explicitly requests a specific domain, run only the relevant tool(s)
 - Security/IAM/RBAC/access control → check_eks_security
 - Availability/resilience/autoscaling/pod issues → check_eks_resiliency
 - Karpenter/node autoscaling configuration → check_karpenter_best_practices
+- Cluster Autoscaler configuration → check_cluster_autoscaler_best_practices
 
 ## Understanding Tool Output
 
@@ -100,7 +106,7 @@ When analyzing check results, the AI must:
 ```
 User: "Review my EKS cluster 'production-cluster' for best practices"
 AI Action: 
-  1. Run all 4 tools (networking, security, resiliency, karpenter)
+  1. Run all 5 tools (networking, security, resiliency, karpenter, cluster autoscaler)
   2. Analyze all results and identify issues by severity
   3. Generate comprehensive report with prioritized remediation steps
   4. Provide actionable fixes for high-severity issues first
@@ -124,6 +130,16 @@ AI Action:
   2. Analyze NodePool configuration, instance selection, spot usage
   3. Provide specific Karpenter configuration improvements
   4. Suggest optimizations for cost and reliability
+```
+
+### Cluster Autoscaler Configuration Review
+```
+User: "Check my Cluster Autoscaler configuration in 'prod-cluster'"
+AI Action:
+  1. Run check_cluster_autoscaler_best_practices
+  2. Analyze version compatibility, auto-discovery, IAM permissions, node groups
+  3. Provide specific Cluster Autoscaler configuration improvements
+  4. Suggest optimizations for performance and cost
 ```
 
 ## Best Practices Alignment
@@ -160,6 +176,9 @@ security_handler = EKSSecurityHandler(mcp, client_cache)
 
 # Initialize the EKS Karpenter handler
 karpenter_handler = EKSKarpenterHandler(mcp, client_cache)
+
+# Initialize the EKS Cluster Autoscaler handler
+cluster_autoscaler_handler = EKSClusterAutoscalerHandler(mcp, client_cache)
 
 # Initialize the EKS networking handler
 networking_handler = EKSNetworkingHandler(mcp, client_cache)

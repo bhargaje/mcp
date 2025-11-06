@@ -138,14 +138,14 @@ class EKSKarpenterHandler:
 
             # Get K8s client for the cluster
             try:
-                client = self.client_cache.get_client(cluster_name)
+                k8s_client = self.client_cache.get_client(cluster_name)
                 logger.info(f'Successfully obtained K8s client for cluster: {cluster_name}')
             except Exception as e:
                 logger.error(f'Failed to get K8s client for cluster {cluster_name}: {str(e)}')
                 return self._create_error_response(cluster_name, str(e))
 
             # First check if self-managed Karpenter is deployed
-            karpenter_result = await self._check_karpenter_deployment(client, cluster_name, namespace)
+            karpenter_result = await self._check_karpenter_deployment(k8s_client, cluster_name, namespace)
             
             check_results = []
             all_compliant = True
@@ -164,7 +164,7 @@ class EKSKarpenterHandler:
                 for check_id in sorted(remaining_checks.keys()):
                     try:
                         logger.info(f'Running check {check_id}')
-                        result = await self._execute_check(check_id, client, cluster_name, namespace)
+                        result = await self._execute_check(check_id, k8s_client, cluster_name, namespace)
                         check_results.append(result)
                         
                         if not result['compliant']:
@@ -209,7 +209,7 @@ class EKSKarpenterHandler:
             logger.error(f'Unexpected error in Karpenter best practices check: {str(e)}')
             return self._create_error_response(cluster_name, str(e))
 
-    async def _execute_check(self, check_id: str, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _execute_check(self, check_id: str, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Execute a single check based on its ID."""
         
         # Map check IDs to their corresponding methods
@@ -228,15 +228,15 @@ class EKSKarpenterHandler:
         
         method = check_methods.get(check_id)
         if method:
-            return await method(client, cluster_name, namespace)
+            return await method(k8s_client, cluster_name, namespace)
         else:
             return self._create_check_error_result(check_id, f'Check method not implemented for {check_id}')
 
-    async def _check_karpenter_deployment(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_karpenter_deployment(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if Karpenter is deployed."""
         try:
             # Check for Karpenter deployment across all namespaces
-            deployments = client.list_resources(kind='Deployment', api_version='apps/v1')
+            deployments = k8s_client.list_resources(kind='Deployment', api_version='apps/v1')
             
             karpenter_deployments = []
             for deployment in deployments.items:
@@ -260,11 +260,11 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K1', str(e))
 
-    async def _check_ami_lockdown(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_ami_lockdown(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if AMIs are locked down in NodePools."""
         try:
             # Check for NodePool resources
-            nodepools = client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
             
             unlocked_nodepools = []
             locked_nodepools = []
@@ -296,11 +296,11 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K2', str(e))
 
-    async def _check_instance_type_exclusions(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_instance_type_exclusions(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if instance types are properly excluded."""
         try:
             # Check for NodePool resources
-            nodepools = client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
             
             nodepools_without_exclusions = []
             nodepools_with_exclusions = []
@@ -339,11 +339,11 @@ class EKSKarpenterHandler:
 
 
 
-    async def _check_nodepool_exclusivity(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_nodepool_exclusivity(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if NodePools are mutually exclusive or weighted."""
         try:
             # Check for NodePool resources
-            nodepools = client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
             
             weighted_nodepools = []
             exclusive_nodepools = []
@@ -379,11 +379,11 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K5', str(e))
 
-    async def _check_ttl_configuration(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_ttl_configuration(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if TTL is configured for NodePools."""
         try:
             # Check for NodePool resources
-            nodepools = client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
             
             nodepools_without_ttl = []
             nodepools_with_ttl = []
@@ -414,11 +414,11 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K6', str(e))
 
-    async def _check_instance_type_diversity(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_instance_type_diversity(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if NodePools allow sufficient instance type diversity."""
         try:
             # Check for NodePool resources
-            nodepools = client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
             
             constrained_nodepools = []
             diverse_nodepools = []
@@ -457,11 +457,11 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K7', str(e))
 
-    async def _check_nodepool_limits(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_nodepool_limits(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if NodePools have proper limits configured."""
         try:
             # Check for NodePool resources
-            nodepools = client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
             
             nodepools_without_limits = []
             nodepools_with_limits = []
@@ -492,11 +492,11 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K8', str(e))
 
-    async def _check_disruption_settings(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_disruption_settings(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if disruption settings are properly configured."""
         try:
             # Check for NodePool resources
-            nodepools = client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
             
             nodepools_without_disruption = []
             nodepools_with_disruption = []
@@ -531,7 +531,7 @@ class EKSKarpenterHandler:
         except Exception as e:
             return self._create_check_error_result('K9', str(e))
 
-    async def _check_auto_mode(self, client, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    async def _check_auto_mode(self, k8s_client, cluster_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check if EKS Auto Mode is enabled."""
         try:
             logger.info(f'A1 Check: Starting Auto Mode detection for cluster: {cluster_name}')
@@ -597,11 +597,11 @@ class EKSKarpenterHandler:
                 f'Auto Mode check failed: {str(e)}'
             )
 
-    async def _check_spot_consolidation(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_spot_consolidation(self, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Check if Spot capacity is used and spot-to-spot consolidation is enabled."""
         try:
             # Check NodePools for Spot capacity usage
-            nodepools = client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
+            nodepools = k8s_client.list_resources(kind='NodePool', api_version='karpenter.sh/v1')
             
             spot_nodepools = []
             for nodepool in nodepools.items:
@@ -629,7 +629,7 @@ class EKSKarpenterHandler:
                 )
             
             # Check Karpenter deployment for SpotToSpotConsolidation feature gate
-            deployments = client.list_resources(kind='Deployment', api_version='apps/v1')
+            deployments = k8s_client.list_resources(kind='Deployment', api_version='apps/v1')
             
             spot_consolidation_enabled = False
             karpenter_deployment = None

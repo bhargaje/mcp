@@ -139,7 +139,7 @@ class EKSResiliencyHandler:
 
             # Get K8s client for the cluster
             try:
-                client = self.client_cache.get_client(cluster_name)
+                k8s_client = self.client_cache.get_client(cluster_name)
                 logger.info(f'Successfully obtained K8s client for cluster: {cluster_name}')
             except Exception as e:
                 logger.error(f'Failed to get K8s client for cluster {cluster_name}: {str(e)}')
@@ -155,7 +155,7 @@ class EKSResiliencyHandler:
             for check_id in sorted(all_checks.keys()):
                 try:
                     logger.info(f'Running check {check_id}')
-                    result = await self._execute_check(check_id, client, cluster_name, namespace)
+                    result = await self._execute_check(check_id, k8s_client, cluster_name, namespace)
                     check_results.append(result)
                     
                     if not result['compliant']:
@@ -186,7 +186,7 @@ class EKSResiliencyHandler:
             logger.error(f'Unexpected error in resiliency check: {str(e)}')
             return self._create_error_response(cluster_name, str(e))
 
-    async def _execute_check(self, check_id: str, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _execute_check(self, check_id: str, k8s_client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
         """Execute a single check based on its ID."""
         
         # Map check IDs to their corresponding methods
@@ -225,16 +225,16 @@ class EKSResiliencyHandler:
         
         # Execute the check method
         if check_id.startswith('A'):
-            # Application checks only need client and namespace
-            return check_method(client, namespace)
+            # Application checks only need k8s_client and namespace
+            return check_method(k8s_client, namespace)
         else:
             # Control plane and data plane checks need cluster_name too
-            return check_method(client, cluster_name, namespace)
+            return check_method(k8s_client, cluster_name, namespace)
 
     # Placeholder check methods - these would contain the actual check logic
     # For now, I'll create simple placeholder implementations that use the JSON configuration
     
-    def _check_singleton_pods(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_singleton_pods(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A1: Singleton pods without controller management."""
         singleton_pods = []
         try:
@@ -252,7 +252,7 @@ class EKSResiliencyHandler:
 
             # Use the K8sApis list_resources method
             logger.info('Calling list_resources to get pods')
-            pods_response = k8s_api.list_resources(kind='Pod', api_version='v1', **kwargs)
+            pods_response = k8s_client.list_resources(kind='Pod', api_version='v1', **kwargs)
 
             # Log the number of pods found
             pod_count = len(pods_response.items) if hasattr(pods_response, 'items') else 0
@@ -297,7 +297,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking singleton pods {scope_info}: {str(e)}'
             return self._create_check_result('A1', False, [], error_message)
 
-    def _check_multiple_replicas(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_multiple_replicas(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A2: Deployments and StatefulSets with only one replica."""
         single_replica_workloads = []
         try:
@@ -315,7 +315,7 @@ class EKSResiliencyHandler:
 
             # Check Deployments
             logger.info('Calling list_resources to get deployments')
-            deployments_response = k8s_api.list_resources(
+            deployments_response = k8s_client.list_resources(
                 kind='Deployment', api_version='apps/v1', **kwargs
             )
 
@@ -354,7 +354,7 @@ class EKSResiliencyHandler:
             # Check StatefulSets
             logger.info('Calling list_resources to get statefulsets')
             try:
-                statefulsets_response = k8s_api.list_resources(
+                statefulsets_response = k8s_client.list_resources(
                     kind='StatefulSet', api_version='apps/v1', **kwargs
                 )
 
@@ -412,7 +412,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking workloads for multiple replicas {scope_info}: {str(e)}'
             return self._create_check_result('A2', False, [], error_message)
 
-    def _check_pod_anti_affinity(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_pod_anti_affinity(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A3: Multi-replica deployments without pod anti-affinity."""
         deployments_without_anti_affinity = []
         try:
@@ -430,7 +430,7 @@ class EKSResiliencyHandler:
 
             # Use the K8sApis list_resources method to get deployments
             logger.info('Calling list_resources to get deployments')
-            deployments_response = k8s_api.list_resources(
+            deployments_response = k8s_client.list_resources(
                 kind='Deployment', api_version='apps/v1', **kwargs
             )
 
@@ -496,7 +496,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking deployments for pod anti-affinity {scope_info}: {str(e)}'
             return self._create_check_result('A3', False, [], error_message)
 
-    def _check_liveness_probe(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_liveness_probe(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A4: Deployments without liveness probes."""
         workloads_without_liveness = []
         try:
@@ -515,7 +515,7 @@ class EKSResiliencyHandler:
             # Check Deployments
             logger.info('Checking Deployments for liveness probes')
             try:
-                deployments_response = k8s_api.list_resources(
+                deployments_response = k8s_client.list_resources(
                     kind='Deployment', api_version='apps/v1', **kwargs
                 )
 
@@ -553,7 +553,7 @@ class EKSResiliencyHandler:
             # Check StatefulSets
             logger.info('Checking StatefulSets for liveness probes')
             try:
-                statefulsets_response = k8s_api.list_resources(
+                statefulsets_response = k8s_client.list_resources(
                     kind='StatefulSet', api_version='apps/v1', **kwargs
                 )
 
@@ -592,7 +592,7 @@ class EKSResiliencyHandler:
             # Check DaemonSets
             logger.info('Checking DaemonSets for liveness probes')
             try:
-                daemonsets_response = k8s_api.list_resources(
+                daemonsets_response = k8s_client.list_resources(
                     kind='DaemonSet', api_version='apps/v1', **kwargs
                 )
 
@@ -640,7 +640,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking workloads for liveness probes {scope_info}: {str(e)}'
             return self._create_check_result('A4', False, [], error_message)
 
-    def _check_readiness_probe(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_readiness_probe(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A5: Deployments without readiness probes."""
         workloads_without_readiness = []
         try:
@@ -658,7 +658,7 @@ class EKSResiliencyHandler:
             # Check Deployments, StatefulSets, and DaemonSets
             for workload_type in ['Deployment', 'StatefulSet', 'DaemonSet']:
                 try:
-                    workloads_response = k8s_api.list_resources(
+                    workloads_response = k8s_client.list_resources(
                         kind=workload_type, api_version='apps/v1', **kwargs
                     )
 
@@ -706,7 +706,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking workloads for readiness probes {scope_info}: {str(e)}'
             return self._create_check_result('A5', False, [], error_message)
 
-    def _check_pod_disruption_budget(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_pod_disruption_budget(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A6: Critical workloads without Pod Disruption Budgets."""
         workloads_without_pdb = []
         try:
@@ -720,7 +720,7 @@ class EKSResiliencyHandler:
                 kwargs['namespace'] = namespace
 
             # Get all PDBs first
-            pdbs_response = k8s_api.list_resources(
+            pdbs_response = k8s_client.list_resources(
                 kind='PodDisruptionBudget', api_version='policy/v1', **kwargs
             )
             
@@ -738,7 +738,7 @@ class EKSResiliencyHandler:
             # Check critical workloads (multi-replica Deployments and all StatefulSets)
             for workload_type in ['Deployment', 'StatefulSet']:
                 try:
-                    workloads_response = k8s_api.list_resources(
+                    workloads_response = k8s_client.list_resources(
                         kind=workload_type, api_version='apps/v1', **kwargs
                     )
 
@@ -789,7 +789,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking pod disruption budgets {scope_info}: {str(e)}'
             return self._create_check_result('A6', False, [], error_message)
 
-    def _check_metrics_server(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_metrics_server(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A7: Kubernetes Metrics Server."""
         try:
             logger.info('Starting metrics server check')
@@ -810,7 +810,7 @@ class EKSResiliencyHandler:
 
             # Check for metrics-server deployment
             try:
-                deployments_response = k8s_api.list_resources(
+                deployments_response = k8s_client.list_resources(
                     kind='Deployment', api_version='apps/v1', namespace='kube-system'
                 )
                 
@@ -842,7 +842,7 @@ class EKSResiliencyHandler:
             error_message = f'Error checking metrics server: {str(e)}'
             return self._create_check_result('A7', False, [], error_message)
 
-    def _check_horizontal_pod_autoscaler(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_horizontal_pod_autoscaler(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A8: Horizontal Pod Autoscaler (HPA)."""
         workloads_without_hpa = []
         try:
@@ -857,7 +857,7 @@ class EKSResiliencyHandler:
 
             # Get all HPAs first
             try:
-                hpas_response = k8s_api.list_resources(
+                hpas_response = k8s_client.list_resources(
                     kind='HorizontalPodAutoscaler', api_version='autoscaling/v2', **kwargs
                 )
                 hpa_targets = set()
@@ -879,7 +879,7 @@ class EKSResiliencyHandler:
             # Check multi-replica Deployments and StatefulSets
             for workload_type in ['Deployment', 'StatefulSet']:
                 try:
-                    workloads_response = k8s_api.list_resources(
+                    workloads_response = k8s_client.list_resources(
                         kind=workload_type, api_version='apps/v1', **kwargs
                     )
 
@@ -926,7 +926,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking HPA {scope_info}: {str(e)}'
             return self._create_check_result('A8', False, [], error_message)
 
-    def _check_custom_metrics(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_custom_metrics(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A9: Custom metrics scaling."""
         try:
             logger.info('Starting custom metrics check')
@@ -976,7 +976,7 @@ class EKSResiliencyHandler:
             error_message = f'Error checking custom metrics: {str(e)}'
             return self._create_check_result('A9', False, [], error_message)
 
-    def _check_vertical_pod_autoscaler(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_vertical_pod_autoscaler(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A10: Vertical Pod Autoscaler (VPA)."""
         try:
             logger.info('Starting VPA check')
@@ -998,7 +998,7 @@ class EKSResiliencyHandler:
             # Check for VPA controller components
             vpa_components_found = []
             try:
-                deployments_response = k8s_api.list_resources(
+                deployments_response = k8s_client.list_resources(
                     kind='Deployment', api_version='apps/v1', namespace='kube-system'
                 )
                 
@@ -1027,7 +1027,7 @@ class EKSResiliencyHandler:
             error_message = f'Error checking VPA: {str(e)}'
             return self._create_check_result('A10', False, [], error_message)
 
-    def _check_prestop_hooks(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_prestop_hooks(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A11: PreStop hooks for graceful termination."""
         workloads_without_prestop = []
         try:
@@ -1043,7 +1043,7 @@ class EKSResiliencyHandler:
             # Check Deployments and StatefulSets (exclude DaemonSets as they're system services)
             for workload_type in ['Deployment', 'StatefulSet']:
                 try:
-                    workloads_response = k8s_api.list_resources(
+                    workloads_response = k8s_client.list_resources(
                         kind=workload_type, api_version='apps/v1', **kwargs
                     )
 
@@ -1091,7 +1091,7 @@ class EKSResiliencyHandler:
             error_message = f'API error while checking preStop hooks {scope_info}: {str(e)}'
             return self._create_check_result('A11', False, [], error_message)
 
-    def _check_service_mesh(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_service_mesh(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A12: Service mesh usage."""
         try:
             logger.info('Starting service mesh check')
@@ -1126,7 +1126,7 @@ class EKSResiliencyHandler:
 
             # Check for Consul Connect
             try:
-                deployments_response = k8s_api.list_resources(
+                deployments_response = k8s_client.list_resources(
                     kind='Deployment', api_version='apps/v1'
                 )
                 
@@ -1156,7 +1156,7 @@ class EKSResiliencyHandler:
             error_message = f'Error checking service mesh: {str(e)}'
             return self._create_check_result('A12', False, [], error_message)
 
-    def _check_monitoring(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_monitoring(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A13: Application monitoring."""
         try:
             logger.info('Starting monitoring check')
@@ -1178,7 +1178,7 @@ class EKSResiliencyHandler:
 
             # Check for CloudWatch Container Insights
             try:
-                daemonsets_response = k8s_api.list_resources(
+                daemonsets_response = k8s_client.list_resources(
                     kind='DaemonSet', api_version='apps/v1', namespace='amazon-cloudwatch'
                 )
                 
@@ -1194,7 +1194,7 @@ class EKSResiliencyHandler:
 
             # Check for other monitoring solutions
             try:
-                deployments_response = k8s_api.list_resources(
+                deployments_response = k8s_client.list_resources(
                     kind='Deployment', api_version='apps/v1'
                 )
                 
@@ -1223,7 +1223,7 @@ class EKSResiliencyHandler:
             error_message = f'Error checking monitoring: {str(e)}'
             return self._create_check_result('A13', False, [], error_message)
 
-    def _check_centralized_logging(self, k8s_api, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _check_centralized_logging(self, k8s_client, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Check A14: Centralized logging."""
         try:
             logger.info('Starting centralized logging check')
@@ -1245,7 +1245,7 @@ class EKSResiliencyHandler:
 
             # Check for Fluentd/Fluent Bit
             try:
-                daemonsets_response = k8s_api.list_resources(
+                daemonsets_response = k8s_client.list_resources(
                     kind='DaemonSet', api_version='apps/v1'
                 )
                 
@@ -1260,7 +1260,7 @@ class EKSResiliencyHandler:
 
             # Check for Loki
             try:
-                deployments_response = k8s_api.list_resources(
+                deployments_response = k8s_client.list_resources(
                     kind='Deployment', api_version='apps/v1'
                 )
                 
@@ -1346,7 +1346,7 @@ class EKSResiliencyHandler:
 
             # Check for aws-auth ConfigMap (legacy method)
             try:
-                configmaps_response = k8s_api.list_resources(
+                configmaps_response = k8s_client.list_resources(
                     kind='ConfigMap', api_version='v1', namespace='kube-system'
                 )
                 
@@ -1382,7 +1382,7 @@ class EKSResiliencyHandler:
             logger.info(f'Starting large clusters check for cluster: {cluster_name}')
 
             # Count total services in the cluster
-            services_response = k8s_api.list_resources(kind='Service', api_version='v1')
+            services_response = k8s_client.list_resources(kind='Service', api_version='v1')
             service_count = len(services_response.items) if hasattr(services_response, 'items') else 0
             
             # If less than 1000 services, cluster is not considered large
@@ -1395,7 +1395,7 @@ class EKSResiliencyHandler:
             
             # Check kube-proxy mode
             try:
-                configmaps_response = k8s_api.list_resources(
+                configmaps_response = k8s_client.list_resources(
                     kind='ConfigMap', api_version='v1', namespace='kube-system'
                 )
                 
@@ -1418,7 +1418,7 @@ class EKSResiliencyHandler:
 
             # Check AWS VPC CNI IP caching
             try:
-                daemonsets_response = k8s_api.list_resources(
+                daemonsets_response = k8s_client.list_resources(
                     kind='DaemonSet', api_version='apps/v1', namespace='kube-system'
                 )
                 
@@ -1510,7 +1510,7 @@ class EKSResiliencyHandler:
             
             # Check MutatingAdmissionWebhooks
             try:
-                mutating_webhooks_response = k8s_api.list_resources(
+                mutating_webhooks_response = k8s_client.list_resources(
                     kind='MutatingAdmissionWebhook', api_version='admissionregistration.k8s.io/v1'
                 )
                 
@@ -1535,7 +1535,7 @@ class EKSResiliencyHandler:
 
             # Check ValidatingAdmissionWebhooks
             try:
-                validating_webhooks_response = k8s_api.list_resources(
+                validating_webhooks_response = k8s_client.list_resources(
                     kind='ValidatingAdmissionWebhook', api_version='admissionregistration.k8s.io/v1'
                 )
                 
@@ -1582,7 +1582,7 @@ class EKSResiliencyHandler:
             
             # Check for Cluster Autoscaler
             try:
-                deployments_response = k8s_api.list_resources(
+                deployments_response = k8s_client.list_resources(
                     kind='Deployment', api_version='apps/v1', namespace='kube-system'
                 )
                 
@@ -1607,7 +1607,7 @@ class EKSResiliencyHandler:
                 )
                 
                 # Check for Karpenter deployment
-                deployments_response = k8s_api.list_resources(
+                deployments_response = k8s_client.list_resources(
                     kind='Deployment', api_version='apps/v1', namespace='karpenter'
                 )
                 
@@ -1643,7 +1643,7 @@ class EKSResiliencyHandler:
             logger.info(f'Checking multi-AZ node distribution for cluster: {cluster_name}')
             
             # Get all nodes using Kubernetes API
-            nodes_response = k8s_api.list_resources(kind='Node', api_version='v1')
+            nodes_response = k8s_client.list_resources(kind='Node', api_version='v1')
             
             if not hasattr(nodes_response, 'items') or not nodes_response.items:
                 details = {
@@ -1757,7 +1757,7 @@ class EKSResiliencyHandler:
                 kwargs['namespace'] = namespace
 
             # Check Deployments
-            deployments_response = k8s_api.list_resources(
+            deployments_response = k8s_client.list_resources(
                 kind='Deployment', api_version='apps/v1', **kwargs
             )
 
@@ -1815,10 +1815,10 @@ class EKSResiliencyHandler:
             logger.info('Starting namespace resource quotas check')
 
             # Get all namespaces
-            namespaces_response = k8s_api.list_resources(kind='Namespace', api_version='v1')
+            namespaces_response = k8s_client.list_resources(kind='Namespace', api_version='v1')
             
             # Get all resource quotas
-            quotas_response = k8s_api.list_resources(kind='ResourceQuota', api_version='v1')
+            quotas_response = k8s_client.list_resources(kind='ResourceQuota', api_version='v1')
             
             # Build set of namespaces that have quotas
             namespaces_with_quotas = set()
@@ -1878,10 +1878,10 @@ class EKSResiliencyHandler:
             logger.info('Starting namespace limit ranges check')
 
             # Get all namespaces
-            namespaces_response = k8s_api.list_resources(kind='Namespace', api_version='v1')
+            namespaces_response = k8s_client.list_resources(kind='Namespace', api_version='v1')
             
             # Get all limit ranges
-            limits_response = k8s_api.list_resources(kind='LimitRange', api_version='v1')
+            limits_response = k8s_client.list_resources(kind='LimitRange', api_version='v1')
             
             # Build set of namespaces that have limit ranges
             namespaces_with_limits = set()
@@ -1942,7 +1942,7 @@ class EKSResiliencyHandler:
             # Check for CoreDNS deployment
             coredns_found = False
             try:
-                deployments_response = k8s_api.list_resources(
+                deployments_response = k8s_client.list_resources(
                     kind='Deployment', api_version='apps/v1', namespace='kube-system'
                 )
                 
@@ -1968,7 +1968,7 @@ class EKSResiliencyHandler:
                     _preload_content=False
                 )
                 
-                servicemonitors_response = k8s_api.list_resources(
+                servicemonitors_response = k8s_client.list_resources(
                     kind='ServiceMonitor', api_version='monitoring.coreos.com/v1', namespace='kube-system'
                 )
                 
@@ -2037,7 +2037,7 @@ class EKSResiliencyHandler:
             # Check for CoreDNS deployment
             coredns_found = False
             try:
-                deployments = k8s_api.list_resources(
+                deployments = k8s_client.list_resources(
                     kind='Deployment',
                     api_version='apps/v1',
                     namespace='kube-system',

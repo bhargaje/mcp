@@ -16,6 +16,8 @@
 
 import json
 from pathlib import Path
+from awslabs.eks_review_mcp_server.aws_helper import AwsHelper
+from awslabs.eks_review_mcp_server.logging_helper import LogLevel, log_with_request_id
 from awslabs.eks_review_mcp_server.models import ClusterAutoscalerCheckResponse
 from loguru import logger
 from mcp.server.fastmcp import Context
@@ -66,7 +68,7 @@ class EKSClusterAutoscalerHandler:
     def _get_remediation(self, check_id: str) -> str:
         """Get remediation guidance for a check."""
         check_info = self._get_check_info(check_id)
-        return check_info.get('recommendation', '')
+        return check_info.get('remediation', '')
 
     def _create_check_result(self, check_id: str, compliant: bool, impacted_resources: List[str], details: str) -> Dict[str, Any]:
         """Create a standardized check result."""
@@ -116,6 +118,9 @@ class EKSClusterAutoscalerHandler:
         cluster_name: str = Field(
             ..., description='Name of the EKS cluster to check for Cluster Autoscaler best practices.'
         ),
+        region: Optional[str] = Field(
+            None, description='AWS region where the cluster is located. If not provided, uses default region.'
+        ),
         namespace: Optional[str] = Field(
             'kube-system', description='Namespace where Cluster Autoscaler is deployed (default: kube-system).'
         ),
@@ -140,7 +145,7 @@ class EKSClusterAutoscalerHandler:
 
             # Get K8s client for the cluster
             try:
-                client = self.client_cache.get_client(cluster_name)
+                k8s_client = self.client_cache.get_client(cluster_name)
                 logger.info(f'Successfully obtained K8s client for cluster: {cluster_name}')
             except Exception as e:
                 logger.error(f'Failed to get K8s client for cluster {cluster_name}: {str(e)}')
@@ -156,7 +161,7 @@ class EKSClusterAutoscalerHandler:
             for check_id in sorted(all_checks.keys()):
                 try:
                     logger.info(f'Running check {check_id}')
-                    result = await self._execute_check(check_id, client, cluster_name, namespace)
+                    result = await self._execute_check(check_id, k8s_client, cluster_name, region, namespace)
                     check_results.append(result)
                     
                     if not result['compliant']:
@@ -187,7 +192,7 @@ class EKSClusterAutoscalerHandler:
             logger.error(f'Unexpected error in Cluster Autoscaler check: {str(e)}')
             return self._create_error_response(cluster_name, str(e))
 
-    async def _execute_check(self, check_id: str, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _execute_check(self, check_id: str, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Execute a single check based on its ID."""
         
         # Map check IDs to their corresponding methods
@@ -210,21 +215,20 @@ class EKSClusterAutoscalerHandler:
         
         method = check_methods.get(check_id)
         if method:
-            return await method(client, cluster_name, namespace)
+            return await method(k8s_client, cluster_name, region, namespace)
         else:
             return self._create_check_error_result(check_id, f'Check method not implemented for {check_id}')
 
-    async def _check_version_compatibility(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_version_compatibility(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check if Cluster Autoscaler version matches cluster version."""
         try:
-            # Get cluster version
-            import boto3
-            eks_client = boto3.client('eks')
+            # Get cluster version using AwsHelper
+            eks_client = AwsHelper.create_boto3_client('eks', region_name=region)
             cluster_info = eks_client.describe_cluster(name=cluster_name)
             cluster_version = cluster_info['cluster']['version']
             
             # Get Cluster Autoscaler deployment
-            deployments = client.list_resources(
+            deployments = k8s_client.list_resources(
                 kind='Deployment',
                 api_version='apps/v1',
                 namespace=namespace or 'kube-system'
@@ -277,10 +281,10 @@ class EKSClusterAutoscalerHandler:
         except Exception as e:
             return self._create_check_error_result('VC1', str(e))
 
-    async def _check_auto_discovery_enabled(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_auto_discovery_enabled(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check if auto-discovery is enabled."""
         try:
-            deployments = client.list_resources(
+            deployments = k8s_client.list_resources(
                 kind='Deployment',
                 api_version='apps/v1',
                 namespace=namespace or 'kube-system'
@@ -333,11 +337,11 @@ class EKSClusterAutoscalerHandler:
         except Exception as e:
             return self._create_check_error_result('AD1', str(e))
 
-    async def _check_node_group_tags(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_node_group_tags(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check if node groups have proper auto-discovery tags."""
         try:
-            import boto3
-            eks_client = boto3.client('eks')
+            # Get EKS client using AwsHelper
+            eks_client = AwsHelper.create_boto3_client('eks', region_name=region)
             
             # Get node groups
             node_groups = eks_client.list_nodegroups(clusterName=cluster_name)
@@ -382,46 +386,46 @@ class EKSClusterAutoscalerHandler:
             return self._create_check_error_result('AD2', str(e))
 
     # Placeholder implementations for remaining checks
-    async def _check_iam_permissions(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_iam_permissions(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check IAM permissions - placeholder implementation."""
         return self._create_check_result('IAM1', True, [], 'IAM permissions check not yet implemented')
 
-    async def _check_identical_scheduling_properties(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_identical_scheduling_properties(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check identical scheduling properties - placeholder implementation."""
         return self._create_check_result('NG1', True, [], 'Scheduling properties check not yet implemented')
 
-    async def _check_node_group_consolidation(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_node_group_consolidation(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check node group consolidation - placeholder implementation."""
         return self._create_check_result('NG2', True, [], 'Node group consolidation check not yet implemented')
 
-    async def _check_managed_node_groups(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_managed_node_groups(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check managed node groups usage - placeholder implementation."""
         return self._create_check_result('NG3', True, [], 'Managed node groups check not yet implemented')
 
-    async def _check_spot_diversification(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_spot_diversification(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check spot diversification - placeholder implementation."""
         return self._create_check_result('CO1', True, [], 'Spot diversification check not yet implemented')
 
-    async def _check_capacity_separation(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_capacity_separation(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check capacity separation - placeholder implementation."""
         return self._create_check_result('CO2', True, [], 'Capacity separation check not yet implemented')
 
-    async def _check_expander_strategy(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_expander_strategy(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check expander strategy - placeholder implementation."""
         return self._create_check_result('CO3', True, [], 'Expander strategy check not yet implemented')
 
-    async def _check_resource_allocation(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_resource_allocation(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check resource allocation - placeholder implementation."""
         return self._create_check_result('PS1', True, [], 'Resource allocation check not yet implemented')
 
-    async def _check_scan_interval(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_scan_interval(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check scan interval - placeholder implementation."""
         return self._create_check_result('PS2', True, [], 'Scan interval check not yet implemented')
 
-    async def _check_overprovisioning(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_overprovisioning(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check overprovisioning - placeholder implementation."""
         return self._create_check_result('AV1', True, [], 'Overprovisioning check not yet implemented')
 
-    async def _check_workload_protection(self, client, cluster_name: str, namespace: Optional[str]) -> Dict[str, Any]:
+    async def _check_workload_protection(self, k8s_client, cluster_name: str, region: Optional[str], namespace: Optional[str]) -> Dict[str, Any]:
         """Check workload protection - placeholder implementation."""
         return self._create_check_result('AV2', True, [], 'Workload protection check not yet implemented')
