@@ -69,7 +69,7 @@ class EKSSecurityHandler:
     def _get_remediation(self, check_id: str) -> str:
         """Get remediation guidance for a check."""
         check_info = self._get_check_info(check_id)
-        return check_info.get('recommendation', '')
+        return check_info.get('remediation', '')
 
     def _create_check_result(self, check_id: str, compliant: bool, impacted_resources: List[str], details: str) -> Dict[str, Any]:
         """Create a standardized check result."""

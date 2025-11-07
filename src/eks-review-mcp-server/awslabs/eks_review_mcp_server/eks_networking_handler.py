@@ -65,9 +65,15 @@ class EKSNetworkingHandler:
         all_checks = self._get_all_checks()
         return all_checks.get(check_id, {})
 
+    def _get_remediation(self, check_id: str) -> str:
+        """Get remediation guidance for a check."""
+        check_info = self._get_check_info(check_id)
+        return check_info.get('remediation', '')
+
     def _create_check_result(self, check_id: str, compliant: bool, impacted_resources: List[str], details: Any) -> Dict[str, Any]:
         """Create a standardized check result."""
         check_info = self._get_check_info(check_id)
+        remediation = self._get_remediation(check_id) if not compliant else ''
         
         return {
             'check_id': check_id,
@@ -75,7 +81,7 @@ class EKSNetworkingHandler:
             'compliant': compliant,
             'impacted_resources': impacted_resources,
             'details': details,
-            'remediation': '',  # Empty - LLM will generate based on details
+            'remediation': remediation,
         }
 
     def _create_check_error_result(self, check_id: str, error_msg: str) -> Dict[str, Any]:
