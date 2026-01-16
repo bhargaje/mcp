@@ -326,6 +326,58 @@ The EKS Review MCP Server is designed to work seamlessly with AI code assistants
 4. **Prioritize Actions**: AI prioritizes remediation by severity (High → Medium → Low)
 5. **Provide Guidance**: AI delivers actionable steps including commands, YAML manifests, and configuration changes
 
+## Sample Prompts
+
+Here are optimized example prompts you can use with your AI assistant to perform EKS cluster reviews:
+
+### Example 1: Networking Review
+
+```
+Review networking configuration for EKS cluster eks-demo in us-west-2. 
+
+For each non-compliant finding include:
+- Issue description and affected resources
+- Security and operational impact
+- Detailed remediation steps
+
+Generate a markdown report.
+```
+
+### Example 2: Resiliency Assessment
+
+```
+Assess resiliency for EKS cluster production-cluster in eu-west-1.
+
+For each non-compliant finding include:
+- Issue description and affected resources
+- Availability and reliability impact
+- Detailed remediation steps
+
+Generate a markdown report.
+```
+
+### What These Prompts Do
+
+* Invoke the appropriate check tool (`check_eks_networking` or `check_eks_resiliency`)
+* Focus on non-compliant findings that require attention
+* Analyze impact specific to the review domain (security/operational or availability/reliability)
+* Generate detailed remediation guidance including configuration changes, YAML manifests, and CLI operations
+* Create a structured markdown report for documentation and tracking
+
+### Additional Review Types
+
+You can adapt these prompts for other review domains:
+
+* **Security Review**: Replace "networking" with "security" to assess IAM/RBAC, pod security, encryption, and secrets management
+* **Karpenter Review**: Use "Karpenter" to evaluate NodePool configurations, instance selection, and spot optimization
+* **Cluster Autoscaler Review**: Use "Cluster Autoscaler" to check deployment health, version compatibility, and scaling policies
+
+### Comprehensive Multi-Domain Review
+
+```
+Perform comprehensive review of EKS cluster eks-demo in us-west-2 covering networking, security, and resiliency. Prioritize findings by severity (High → Medium → Low) and provide detailed remediation steps for each domain.
+```
+
 ## Security & Permissions
 
 ### Features
